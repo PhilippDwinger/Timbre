@@ -1,0 +1,7 @@
+[package]
+name = "timbre-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]

@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.wasm
+/pkg
+/dist
+.vscode/settings.json
+.DS_Store
+Thumbs.db

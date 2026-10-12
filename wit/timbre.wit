@@ -1,0 +1,29 @@
+// Timbre Script-Schnittstelle – Entwurf v0.1
+// Jede Script-Sprache (Lua, Luau, Python, Java, …) ist ein WASM-Gast dieser Welt.
+package timbre:engine@0.1.0;
+
+/// Funktionen, die die Engine den Scripts anbietet.
+interface host {
+    /// Ausgabe ins Engine-Log.
+    log: func(message: string);
+
+    /// Zeit seit Engine-Start in Sekunden.
+    time: func() -> f64;
+
+    /// Ein Objekt in der Szene erzeugen, liefert seine ID.
+    spawn: func(name: string) -> u64;
+
+    /// Position eines Objekts setzen.
+    set-position: func(entity: u64, x: f32, y: f32, z: f32);
+}
+
+/// Ein Script: bekommt Engine-Funktionen, liefert Lebenszyklus-Callbacks.
+world script {
+    import host;
+
+    /// Einmal beim Laden des Scripts.
+    export on-start: func();
+
+    /// Jeden Frame, dt = Sekunden seit dem letzten Frame.
+    export on-update: func(dt: f32);
+}

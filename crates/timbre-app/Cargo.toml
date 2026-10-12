@@ -1,0 +1,8 @@
+[package]
+name = "timbre-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+timbre-core = { path = "../timbre-core" }
