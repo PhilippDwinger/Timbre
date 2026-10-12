@@ -97,6 +97,19 @@ impl Input {
         self.scroll
     }
 
+    /// Alle Tasten als „nicht gedrückt“ behandeln (z. B. wenn gerade in ein Textfeld getippt wird).
+    pub fn tasten_loeschen(&mut self) {
+        self.gehalten.clear();
+        self.neu.clear();
+    }
+
+    /// Alle Maustasten und das Mausrad als „nicht benutzt“ behandeln (z. B. Maus über der Oberfläche).
+    pub fn maus_loeschen(&mut self) {
+        self.maus_gehalten.clear();
+        self.maus_neu.clear();
+        self.scroll = 0.0;
+    }
+
     /// Nach jedem Logik-Schritt aufrufen: setzt "neu gedrückt" und Mausrad zurück.
     pub fn schritt_ende(&mut self) {
         self.neu.clear();

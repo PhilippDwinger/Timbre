@@ -1,10 +1,10 @@
-// Timbre Script-Schnittstelle – v0.3 (Meilenstein 5: Scripts als Objekte)
+// Timbre Script-Schnittstelle – v0.4 (Paket 2: Kollisionen, Ereignisse, Bildschirmtext)
 //
 // Beschreibung der Funktionen, die Scripts in jeder Sprache bekommen.
 // Technisch sind die Gäste derzeit einfache WebAssembly-Core-Module mit schmaler
 // C-Schnittstelle (siehe docs/scripting-abi.md) – diese Datei ist die sprachneutrale
 // Beschreibung derselben Funktionen.
-package timbre:engine@0.3.0;
+package timbre:engine@0.4.0;
 
 interface host {
     /// Ausgabe in die Konsole.
@@ -38,6 +38,24 @@ interface host {
 
     /// Kamera
     set-camera: func(x: f32, y: f32, zoom: f32);
+
+    get-name: func(entity: u64) -> option<string>;
+
+    /// Kollisionen
+    enum shape { circle, box }
+    set-collision: func(entity: u64, shape: option<shape>, solid: bool, anchored: bool);
+    get-touching: func(entity: u64) -> list<u64>;
+
+    /// Nachricht an alle Scripts (→ on-message)
+    broadcast: func(message: string, data: option<string>);
+
+    /// Maus (0 links, 1 rechts, 2 Mitte)
+    mouse-down: func(button: u8) -> bool;
+    mouse-pressed: func(button: u8) -> bool;
+
+    /// Text über dem Spiel
+    ui-text: func(key: string, text: string, x: f32, y: f32, size: f32, r: f32, g: f32, b: f32, a: f32);
+    ui-clear: func(key: option<string>);
 }
 
 /// Ein Script: bekommt Engine-Funktionen, liefert Lebenszyklus-Callbacks.
@@ -52,4 +70,12 @@ world script {
 
     /// 60-mal pro Sekunde, dt = Sekunden seit dem letzten Aufruf.
     export on-update: func(dt: f32);
+
+    /// Das Eltern-Objekt des Scripts hat ein anderes Objekt berührt.
+    export on-touch: func(other: u64);
+
+    /// Nachricht von timbre.broadcast.
+    export on-message: func(message: string, data: option<string>);
+
+    // Dazu in jeder Sprache: task.wait / task.delay / task.spawn und eine gemeinsame Tabelle `shared`.
 }

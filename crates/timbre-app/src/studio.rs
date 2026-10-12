@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, Key, Modifiers, PointerButton, RichText, Sense, Stroke};
 use timbre_core::tbr::{self, AssetId};
-use timbre_core::welt::{self, Bewegung, Bild, Eltern, Name, Objekt, Script, Transform, Welt};
+use timbre_core::welt::{self, Bewegung, Bild, Eltern, Form, Kollision, Name, Objekt, Script, Transform, Welt};
 use timbre_core::{
     szene, vec2, Assets, Bereich, FrameStatistik, Input, Kamera2d, KeyCode, Renderer, Sprite, TexturId, Vec2,
 };
@@ -24,7 +24,7 @@ use crate::luau_farben;
 use crate::projekt::{self, ProjektInhalt};
 
 #[cfg(not(target_arch = "wasm32"))]
-use timbre_core::scripting::{Meldung, ScriptLaufzeit, ScriptMotor};
+use timbre_core::scripting::{BildschirmText, Meldung, ScriptLaufzeit, ScriptMotor};
 
 /// Texturen sind vorerst eingebaut (später: Asset-Ordner des Projekts).
 const TEXTUREN: [&[u8]; 2] = [
@@ -91,6 +91,21 @@ enum Aktion {
     Ablegen(Objekt, Option<Objekt>),
 }
 
+/// Griff am ausgewählten Objekt, der gerade gezogen wird.
+#[derive(Clone, Copy)]
+enum GriffArt {
+    Skalieren,
+    Drehen,
+}
+
+#[derive(Clone, Copy)]
+struct Griff {
+    art: GriffArt,
+    start_maus: Vec2,
+    /// Lage in der Welt beim Anfassen
+    start: Transform,
+}
+
 /// Das Übersetzen des Luau-Moduls dauert einen Moment – passiert im Hintergrund.
 #[cfg(not(target_arch = "wasm32"))]
 enum Motor {
@@ -144,6 +159,15 @@ pub struct Studio {
     fehler_zeilen: HashMap<String, usize>,
     /// Im Editor zu dieser Zeile springen (einmalig)
     sprung: Option<(String, usize)>,
+    /// Gitter anzeigen und beim Verschieben/Drehen/Skalieren einrasten
+    gitter: bool,
+    gitter_groesse: f32,
+    griff: Option<Griff>,
+    /// Maus ist über dem Spielbereich (sonst bekommen Scripts keine Mausklicks)
+    maus_ueber_szene: bool,
+    /// Texte, die Scripts auf den Bildschirm schreiben (`timbre.ui_text`)
+    #[cfg(not(target_arch = "wasm32"))]
+    texte: std::collections::BTreeMap<String, BildschirmText>,
 }
 
 impl Studio {
@@ -194,6 +218,12 @@ impl Studio {
             explorer_ziehen: None,
             fehler_zeilen: HashMap::new(),
             sprung: None,
+            gitter: false,
+            gitter_groesse: 32.0,
+            griff: None,
+            maus_ueber_szene: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            texte: Default::default(),
         };
 
         match geladen {
@@ -714,6 +744,7 @@ impl Studio {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.laufzeit = None;
+            self.texte.clear();
         }
         // Auswahl über den Namen wiederfinden (Objekt-Nummern ändern sich beim Zurücksetzen)
         let auswahl_name = self.auswahl.map(|o| self.name(o));
@@ -864,7 +895,14 @@ impl Studio {
                 if let Some(lz) = self.laufzeit.as_mut() {
                     if !lz.abgestuerzt() {
                         let k = lz.kontext();
-                        k.input = if tastatur_frei { input.clone() } else { Input::default() };
+                        let mut eingabe = input.clone();
+                        if !tastatur_frei {
+                            eingabe.tasten_loeschen();
+                        }
+                        if !self.maus_ueber_szene {
+                            eingabe.maus_loeschen();
+                        }
+                        k.input = eingabe;
                         k.maus_welt = self.maus_welt;
                         lz.update(&mut self.welt, dt);
                         if let Some(kamera) = lz.kontext().kamera.take() {
@@ -881,6 +919,21 @@ impl Studio {
                     }
                 }
                 welt::bewegen(&mut self.welt, dt);
+
+                // Kollisionen auflösen und Berührungen an die Scripts melden (on_touch)
+                #[cfg(not(target_arch = "wasm32"))]
+                match self.laufzeit.as_mut() {
+                    Some(lz) => {
+                        lz.kollisionen(&mut self.welt);
+                        self.texte = lz.kontext().texte.clone();
+                        self.meldungen_uebernehmen();
+                    }
+                    None => {
+                        timbre_core::physik::schritt(&mut self.welt);
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                timbre_core::physik::schritt(&mut self.welt);
             }
         }
     }
@@ -1001,18 +1054,30 @@ impl Studio {
             }
             let bearbeiten = self.modus == Modus::Bearbeiten;
             if ui
-                .add_enabled(bearbeiten && !self.zurueck.is_empty(), egui::Button::new("↶"))
+                .add_enabled(bearbeiten && !self.zurueck.is_empty(), egui::Button::new("↩"))
                 .on_hover_text(format!("Rückgängig (Strg+Z) – {} Schritte", self.zurueck.len()))
                 .clicked()
             {
                 self.rueckgaengig();
             }
             if ui
-                .add_enabled(bearbeiten && !self.vor.is_empty(), egui::Button::new("↷"))
+                .add_enabled(bearbeiten && !self.vor.is_empty(), egui::Button::new("↪"))
                 .on_hover_text("Wiederholen (Strg+Y)")
                 .clicked()
             {
                 self.wiederholen();
+            }
+            ui.separator();
+            ui.checkbox(&mut self.gitter, "Gitter").on_hover_text(
+                "Gitter anzeigen; Verschieben, Drehen (15°) und Skalieren rasten ein. Alt gedrückt = frei",
+            );
+            if self.gitter {
+                ui.add(
+                    egui::DragValue::new(&mut self.gitter_groesse)
+                        .speed(1.0)
+                        .range(4.0..=1024.0)
+                        .suffix(" px"),
+                );
             }
             ui.separator();
             let (text, farbe) = match self.modus {
@@ -1316,7 +1381,7 @@ impl Studio {
             {
                 ui.label(RichText::new("relativ zum Eltern-Objekt").weak().small());
             }
-            let mut grad = t.drehung.to_degrees();
+            let mut grad = t.drehung.to_degrees().rem_euclid(360.0);
             let vorher = (t, grad);
             egui::Grid::new("transform").num_columns(2).show(ui, |ui| {
                 ui.label("Position");
@@ -1380,6 +1445,58 @@ impl Studio {
             if b != vorher {
                 let _ = self.welt.insert_one(o, b);
                 self.markieren();
+            }
+        }
+
+        // Kollision (nur für Objekte mit Bild – die Größe kommt aus dem Bild)
+        if self.welt.get::<&Bild>(o).is_ok() {
+            ui.add_space(6.0);
+            match self.welt.get::<&Kollision>(o).map(|k| *k) {
+                Ok(mut k) => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Kollision").strong());
+                        if ui.small_button("entfernen").clicked() {
+                            let _ = self.welt.remove_one::<Kollision>(o);
+                            self.markieren();
+                        }
+                    });
+                    let vorher = k;
+                    egui::Grid::new("kollision").num_columns(2).show(ui, |ui| {
+                        ui.label("Form");
+                        egui::ComboBox::from_id_salt("form")
+                            .selected_text(match k.form {
+                                Form::Kreis => "Kreis",
+                                Form::Rechteck => "Rechteck",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut k.form, Form::Kreis, "Kreis");
+                                ui.selectable_value(&mut k.form, Form::Rechteck, "Rechteck");
+                            });
+                        ui.end_row();
+                        ui.label("Fest");
+                        ui.checkbox(&mut k.fest, "blockiert")
+                            .on_hover_text("Aus = nur Auslöser: meldet Berührungen (on_touch), blockiert aber nichts");
+                        ui.end_row();
+                        ui.label("Verankert");
+                        ui.checkbox(&mut k.verankert, "bleibt stehen")
+                            .on_hover_text("Wird bei Zusammenstößen nie weggeschoben (wie Anchored in Roblox)");
+                        ui.end_row();
+                    });
+                    if k != vorher {
+                        let _ = self.welt.insert_one(o, k);
+                        self.markieren();
+                    }
+                }
+                Err(_) => {
+                    if ui
+                        .small_button("+ Kollision")
+                        .on_hover_text("Stößt mit anderen Objekten zusammen und meldet Berührungen (on_touch)")
+                        .clicked()
+                    {
+                        let _ = self.welt.insert_one(o, Kollision::default());
+                        self.markieren();
+                    }
+                }
             }
         }
 
@@ -1570,6 +1687,58 @@ impl Studio {
         }
     }
 
+    /// Lage in der Welt, die 4 Ecken des Bildes (gedreht) und der Dreh-Griff über der Oberkante.
+    fn rahmen(&self, o: Objekt) -> Option<(Transform, [Vec2; 4], Vec2)> {
+        let t = welt::welt_transform(&self.welt, o)?;
+        let b = self.welt.get::<&Bild>(o).ok()?;
+        let halb = (b.groesse * t.skala).abs() * 0.5;
+        let drehen = Vec2::from_angle(t.drehung);
+        let ecke = |x: f32, y: f32| t.position + drehen.rotate(Vec2::new(x, y));
+        let ecken = [
+            ecke(-halb.x, -halb.y),
+            ecke(halb.x, -halb.y),
+            ecke(halb.x, halb.y),
+            ecke(-halb.x, halb.y),
+        ];
+        let dreh = ecke(0.0, halb.y + 28.0 / self.kamera.zoom);
+        Some((t, ecken, dreh))
+    }
+
+    fn gitter_zeichnen(
+        &self,
+        painter: &egui::Painter,
+        groesse: Vec2,
+        zu_punkt: &dyn Fn(Vec2) -> egui::Pos2,
+        rect: egui::Rect,
+    ) {
+        let g = self.gitter_groesse.max(1.0);
+        let ppp = groesse.x / rect.width().max(1.0);
+        if g * self.kamera.zoom / ppp < 6.0 {
+            return; // zu eng – nur Rauschen
+        }
+        let lo = self.kamera.bildschirm_zu_welt(Vec2::ZERO, groesse);
+        let ru = self.kamera.bildschirm_zu_welt(groesse, groesse);
+        let linie = |achse: bool| Stroke::new(1.0, Color32::from_white_alpha(if achse { 45 } else { 14 }));
+        let mut x = (lo.x / g).floor() * g;
+        while x <= ru.x {
+            let px = zu_punkt(Vec2::new(x, 0.0)).x;
+            painter.line_segment(
+                [egui::pos2(px, rect.top()), egui::pos2(px, rect.bottom())],
+                linie(x.abs() < g * 0.5),
+            );
+            x += g;
+        }
+        let mut y = (ru.y / g).floor() * g;
+        while y <= lo.y {
+            let py = zu_punkt(Vec2::new(0.0, y)).y;
+            painter.line_segment(
+                [egui::pos2(rect.left(), py), egui::pos2(rect.right(), py)],
+                linie(y.abs() < g * 0.5),
+            );
+            y += g;
+        }
+    }
+
     fn szene_ui(&mut self, ui: &mut egui::Ui) {
         let (rect, antwort) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
@@ -1607,21 +1776,75 @@ impl Studio {
             self.kamera_vorher = self.kamera;
         }
 
-        // Auswählen und Verschieben mit der linken Maustaste (nur im Bearbeiten-Modus)
-        if self.modus == Modus::Bearbeiten {
+        self.maus_ueber_szene = antwort.hovered();
+        let painter = ui.painter().with_clip_rect(rect);
+        let kamera = self.kamera;
+        let zu_punkt = |w: Vec2| {
+            let p = kamera.welt_zu_bildschirm(w, groesse) / ppp;
+            egui::pos2(rect.min.x + p.x, rect.min.y + p.y)
+        };
+        let gelb = Color32::from_rgb(0xF2, 0xC1, 0x4E);
+        let bearbeiten = self.modus == Modus::Bearbeiten;
+        let frei = ui.input(|i| i.modifiers.alt); // Alt = ohne Einrasten
+        let einrasten = self.gitter && !frei;
+
+        // Gitter
+        if self.gitter && bearbeiten {
+            self.gitter_zeichnen(&painter, groesse, &zu_punkt, rect);
+        }
+
+        // Griffe des ausgewählten Objekts: Ecken = skalieren, Kreis oben = drehen
+        let rahmen = self.auswahl.and_then(|o| self.rahmen(o));
+        let zeiger = ui.input(|i| i.pointer.latest_pos());
+        let griff_unter_maus = match (bearbeiten, &rahmen, zeiger) {
+            (true, Some((_, ecken, dreh)), Some(z)) => {
+                if zu_punkt(*dreh).distance(z) < 9.0 {
+                    Some(GriffArt::Drehen)
+                } else if ecken.iter().any(|e| zu_punkt(*e).distance(z) < 8.0) {
+                    Some(GriffArt::Skalieren)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match griff_unter_maus.or(self.griff.map(|g| g.art)) {
+            Some(GriffArt::Drehen) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            Some(GriffArt::Skalieren) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe),
+            None => {}
+        }
+
+        // Auswählen, Verschieben, Drehen, Skalieren mit der linken Maustaste (nur im Bearbeiten-Modus)
+        if bearbeiten {
             let (gedrueckt, unten) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
             if gedrueckt && antwort.hovered() {
-                self.auswahl = self.treffer(self.maus_welt);
-                self.ziehen = self
-                    .auswahl
-                    .and_then(|o| welt::welt_transform(&self.welt, o).map(|t| t.position - self.maus_welt));
+                match (griff_unter_maus, &rahmen) {
+                    (Some(art), Some((t, _, _))) => {
+                        self.griff = Some(Griff {
+                            art,
+                            start_maus: self.maus_welt,
+                            start: *t,
+                        });
+                        self.ziehen = None;
+                    }
+                    _ => {
+                        self.auswahl = self.treffer(self.maus_welt);
+                        self.ziehen = self
+                            .auswahl
+                            .and_then(|o| welt::welt_transform(&self.welt, o).map(|t| t.position - self.maus_welt));
+                    }
+                }
             }
             if !unten {
                 self.ziehen = None;
+                self.griff = None;
             }
             if let (Some(o), Some(versatz)) = (self.auswahl, self.ziehen) {
                 if let Some(mut t) = welt::welt_transform(&self.welt, o) {
-                    let ziel = self.maus_welt + versatz;
+                    let mut ziel = self.maus_welt + versatz;
+                    if einrasten {
+                        ziel = (ziel / self.gitter_groesse).round() * self.gitter_groesse;
+                    }
                     if (t.position - ziel).length_squared() > 1e-6 {
                         t.position = ziel;
                         welt::welt_transform_setzen(&mut self.welt, o, t);
@@ -1629,25 +1852,107 @@ impl Studio {
                     }
                 }
             }
+            if let (Some(o), Some(g)) = (self.auswahl, self.griff) {
+                let mut t = g.start;
+                match g.art {
+                    GriffArt::Drehen => {
+                        let a0 = (g.start_maus - t.position).to_angle();
+                        let a1 = (self.maus_welt - t.position).to_angle();
+                        let mut d = g.start.drehung + (a1 - a0);
+                        if einrasten {
+                            let schritt = 15f32.to_radians();
+                            d = (d / schritt).round() * schritt;
+                        }
+                        t.drehung = d.rem_euclid(std::f32::consts::TAU);
+                    }
+                    GriffArt::Skalieren => {
+                        let d0 = (g.start_maus - t.position).length().max(1e-3);
+                        let faktor = (self.maus_welt - t.position).length() / d0;
+                        let mut s = g.start.skala * faktor;
+                        if einrasten {
+                            s = (s * 20.0).round() / 20.0; // 0,05er-Schritte
+                        }
+                        // nie ganz auf 0 (sonst ist das Objekt unsichtbar und nicht mehr greifbar)
+                        s = Vec2::new(
+                            if s.x.abs() < 0.05 {
+                                0.05f32.copysign(g.start.skala.x)
+                            } else {
+                                s.x
+                            },
+                            if s.y.abs() < 0.05 {
+                                0.05f32.copysign(g.start.skala.y)
+                            } else {
+                                s.y
+                            },
+                        );
+                        t.skala = s;
+                    }
+                }
+                if welt::welt_transform(&self.welt, o) != Some(t) {
+                    welt::welt_transform_setzen(&mut self.welt, o, t);
+                    self.markieren();
+                }
+            }
         }
 
-        // Rahmen um das ausgewählte Objekt
+        // Rahmen, Griffe und Kollisionsform des ausgewählten Objekts
         if let Some(o) = self.auswahl {
-            if let (Some(t), Ok(b)) = (
-                welt::welt_transform(&self.welt, o),
-                self.welt.get::<&Bild>(o).map(|b| *b),
-            ) {
-                let mitte = self.kamera.welt_zu_bildschirm(t.position, groesse) / ppp;
-                let halb = (b.groesse * t.skala).abs() * 0.5 * self.kamera.zoom / ppp;
-                let r = egui::Rect::from_center_size(
-                    egui::pos2(rect.min.x + mitte.x, rect.min.y + mitte.y),
-                    egui::vec2(halb.x * 2.0, halb.y * 2.0),
+            if let Some((t, ecken, dreh)) = self.rahmen(o) {
+                let punkte: Vec<egui::Pos2> = ecken.iter().map(|e| zu_punkt(*e)).collect();
+                painter.add(egui::Shape::closed_line(punkte.clone(), Stroke::new(1.5, gelb)));
+                if bearbeiten {
+                    for p in &punkte {
+                        painter.rect_filled(egui::Rect::from_center_size(*p, egui::vec2(8.0, 8.0)), 1.0, gelb);
+                    }
+                    let kante = egui::pos2((punkte[2].x + punkte[3].x) * 0.5, (punkte[2].y + punkte[3].y) * 0.5);
+                    painter.line_segment([kante, zu_punkt(dreh)], Stroke::new(1.0, gelb));
+                    painter.circle_filled(zu_punkt(dreh), 5.5, gelb);
+                }
+                if let (Ok(k), Ok(b)) = (
+                    self.welt.get::<&Kollision>(o).map(|k| *k),
+                    self.welt.get::<&Bild>(o).map(|b| *b),
+                ) {
+                    let gruen = Color32::from_rgb(0x7C, 0xC4, 0x6A);
+                    let groesse_welt = (b.groesse * t.skala).abs();
+                    let strich = Stroke::new(1.2, gruen);
+                    match k.form {
+                        Form::Kreis => {
+                            painter.circle_stroke(
+                                zu_punkt(t.position),
+                                groesse_welt.min_element() * 0.5 * kamera.zoom / ppp,
+                                strich,
+                            );
+                        }
+                        Form::Rechteck => {
+                            let a = zu_punkt(t.position - groesse_welt * 0.5);
+                            let b = zu_punkt(t.position + groesse_welt * 0.5);
+                            painter.rect_stroke(egui::Rect::from_two_pos(a, b), 0.0, strich, egui::StrokeKind::Middle);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Texte der Scripts (Punkte, Leben …)
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.modus == Modus::Laeuft {
+            for t in self.texte.values() {
+                let pos = rect.min + egui::vec2(t.x, t.y) / ppp;
+                let schrift = egui::FontId::proportional(t.groesse);
+                let [r, g, b, a] = t.farbe.map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
+                painter.text(
+                    pos + egui::vec2(1.5, 1.5),
+                    egui::Align2::LEFT_TOP,
+                    &t.text,
+                    schrift.clone(),
+                    Color32::from_black_alpha(160),
                 );
-                ui.painter().with_clip_rect(rect).rect_stroke(
-                    r.expand(3.0),
-                    2.0,
-                    Stroke::new(1.5, Color32::from_rgb(0xF2, 0xC1, 0x4E)),
-                    egui::StrokeKind::Outside,
+                painter.text(
+                    pos,
+                    egui::Align2::LEFT_TOP,
+                    &t.text,
+                    schrift,
+                    Color32::from_rgba_unmultiplied(r, g, b, a),
                 );
             }
         }

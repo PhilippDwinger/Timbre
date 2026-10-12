@@ -124,6 +124,35 @@ pub struct Bewegung {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Name(pub String);
 
+/// Form für Kollisionen. Die Größe kommt aus dem Bild (× Skala).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// Kreis mit dem kleineren Bildmaß als Durchmesser
+    Kreis,
+    /// Rechteck in Bildgröße (Drehung wird bei Kollisionen ignoriert)
+    Rechteck,
+}
+
+/// Das Objekt nimmt an Kollisionen teil.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Kollision {
+    pub form: Form,
+    /// `true`: blockiert andere feste Objekte. `false`: nur Auslöser (meldet Berührungen).
+    pub fest: bool,
+    /// `true`: wird bei Zusammenstößen nie weggeschoben (wie `Anchored` in Roblox).
+    pub verankert: bool,
+}
+
+impl Default for Kollision {
+    fn default() -> Self {
+        Self {
+            form: Form::Rechteck,
+            fest: true,
+            verankert: true,
+        }
+    }
+}
+
 /// Das Objekt hängt unter einem anderen (Baum im Explorer).
 /// Wird das Eltern-Objekt gelöscht, verschwinden die Kinder mit.
 #[derive(Clone, Copy, Debug, PartialEq)]

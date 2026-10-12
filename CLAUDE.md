@@ -29,6 +29,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - **Scripts sind Objekte** (Paddys Vorgabe, Roblox-Prinzip): Komponente `Script { datei, aktiv }` + optional `Eltern(Objekt)`. Quelltext bleibt Datei in `scripts/` (für Git/VS Code); Name ändern = Datei umbenennen (beim Speichern). Dateien ohne Script-Objekt wandern beim Speichern nach `scripts/.papierkorb/`. Ältere Projekte: lose `.luau`-Dateien werden beim Laden zu Script-Objekten.
 - **Baum:** `Eltern`-Komponente, Löschen entfernt Nachkommen (`welt::entfernen`).
 - **Transform ist relativ zum nächsten Vorfahren mit Transform** (Ordner/Scripts ohne Transform zählen nicht). `welt::welt_transform` / `welt_transform_setzen` rechnen um; `eltern_setzen` hängt um, ohne dass das Objekt springt. Script-API (`get/set_position`, `get/set_rotation`) arbeitet in **Weltkoordinaten** (wie Roblox `Position`), das Eigenschaften-Panel zeigt lokale Werte.
+- **Kollisionen** (`physik.rs`): Kreis / ungedrehtes Rechteck, Größe aus Bild × Skala; `fest` (blockiert) vs. Auslöser; `verankert` (wie Anchored). Feste, nicht verankerte werden herausgeschoben, Geschwindigkeit in die Wand wird gekappt. O(n²) über Objekte mit Kollision – reicht für einige hundert. `on_touch` nur bei **neuer** Berührung, an Scripts, deren Eltern beteiligt sind.
+- **Luau-Gast-Laufzeit:** `on_start`, `on_touch`, `on_message` laufen als Coroutinen (dürfen `task.wait`), `on_update` per pcall (kein Warten). Achtung im Gast-C++: immer auf dem Stack des übergebenen `lua_State` arbeiten (Coroutinen!), nicht auf dem globalen `L`.
 - **Rückgängig** = Schnappschüsse des Szenen-JSON (max. 100), gemerkt nach abgeschlossener Änderung (`markieren()` an jeder Änderungsstelle im Studio aufrufen!).
 - **Reihenfolge:** Paddy will erst die Engine verbessern, dann weitere Sprachen.
 - **Assets:** eigenes Format `.tbr` (Mesh, Textur, Szene). Assets liegen lokal bzw. später auf Paddys Homeserver – **nicht** in Supabase. Supabase höchstens für Metadaten/Login (Grove-Auth).
@@ -101,9 +103,14 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - ABI: `timbre_laden` bekommt `script_id`, `eltern_id`; neues Export `timbre_script_stoppen`; neue Importe `set_parent`, `get_parent`. In Luau: `script.name/id/parent`.
   - Beispielprojekt: `Steuerung` hängt unter `Spieler` und nutzt `script.parent`; `Laubregen` legt seine Blätter in einen Ordner `Laub` unter sich.
   - `rustfmt.toml` mit `max_width = 120`.
-- Paket 1 „Editor-Grundlagen“ gebaut (in Claudes Testumgebung geprüft, wartet auf Validierung):
+- Paket 1 „Editor-Grundlagen“ ✅ von Paddy freigegeben:
   - Rückgängig/Wiederholen (Strg+Z / Strg+Y / Strg+Umschalt+Z, Knöpfe ↶ ↷) für alle Szenen-Änderungen; Script-Puffer bleiben im Speicher, damit Rückgängig gelöschte/umbenannte Scripts zurückholen kann.
   - Drag & Drop im Explorer (auf Objekt = Kind, auf freie Fläche = oberste Ebene, Schleifen verweigert).
   - Kinder bewegen sich mit (Position, Drehung, Skala), auch über Ordner ohne Transform hinweg; interpoliert gezeichnet. Tests `kinder_bewegen_sich_mit`, `positionen_von_kindern_sind_weltkoordinaten`.
   - Fehler in der Konsole anklickbar → Script öffnet sich, Cursor + Scroll zur Zeile, Zeile rot hinterlegt (bis zur nächsten Änderung oder ▶). Editor hat Zeilennummern.
   - Ideen-Liste danach: Paket 2 (Kollisionen + on_touch, mehr Script-API: Maus, wait/Timer, Nachrichten, Bildschirmtext; Gitter/Einrasten, Dreh-/Skalier-Griffe), Paket 3 (PNG-Import per Drag & Drop, Sounds), Paket 4 (Live-Neuladen von Scripts, Autovervollständigung). Danach weitere Sprachen.
+- Paket 2 „Echte Spiele“ gebaut (in Claudes Testumgebung geprüft: Spiel gespielt, 2 Goldstücke gesammelt; wartet auf Validierung):
+  - Kollisionen + Eigenschaften-Bereich „Kollision“ (Form, Fest, Verankert) + grüne Umrisslinie am ausgewählten Objekt; Szenen-JSON `kollision {form, fest, verankert}`.
+  - Script-API: `on_touch`, `on_message`, `timbre.broadcast`, `shared`, `task.wait/delay/spawn`, `get_name`, `set_collision`, `get_touching`, `mouse_down/pressed` (nur über dem Spielbereich), `ui_text/ui_clear` (Bildschirmtexte, im Studio über der Szene gezeichnet).
+  - Editor: Gitter (Größe einstellbar) mit Einrasten (Alt = frei), gedrehter Auswahlrahmen, Griffe zum Skalieren (Ecken) und Drehen (Kreis), Einrasten 15° / 0,05.
+  - Beispielprojekt: Sammelspiel (`Sammelspiel.luau` + `on_touch` in `Steuerung.luau`), Baumstümpfe blockieren, Spieler hat Kollision.

@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod input;
 pub mod kamera;
+pub mod physik;
 pub mod renderer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scripting;
@@ -17,7 +18,7 @@ pub use kamera::Kamera2d;
 pub use renderer::{Bereich, Frame, FrameStatistik, Renderer, Sprite, TexturId};
 /// Das Asset-Format, damit Spiele nicht extra `timbre-tbr` einbinden müssen.
 pub use timbre_tbr as tbr;
-pub use welt::{Bewegung, Bild, Eltern, Name, Objekt, Script, Transform, Welt};
+pub use welt::{Bewegung, Bild, Eltern, Form, Kollision, Name, Objekt, Script, Transform, Welt};
 pub use zeit::FesterTakt;
 
 pub const NAME: &str = "Timbre";

@@ -14,12 +14,15 @@ use std::collections::HashMap;
 use glam::Vec2;
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store, Trap, TypedFunc};
 
-use crate::input::{taste_aus_name, Input};
+use std::collections::BTreeMap;
+
+use crate::input::{taste_aus_name, Input, MouseButton};
 use crate::kamera::Kamera2d;
+use crate::physik::{self, Beruehrungen, Paar};
 use crate::renderer::TexturId;
 use crate::welt::{
     eltern_setzen, entfernen, objekt_aus_nummer, objekt_nummer, welt_transform, welt_transform_setzen, Bewegung, Bild,
-    Eltern, Name, Objekt, Transform, Welt,
+    Eltern, Form, Kollision, Name, Objekt, Transform, Welt,
 };
 
 /// Wie viele WebAssembly-Anweisungen ein Aufruf höchstens ausführen darf.
@@ -47,6 +50,20 @@ pub struct Kontext {
     pub meldungen: Vec<Meldung>,
     /// Von einem Script gewünschte Kamera
     pub kamera: Option<Kamera2d>,
+    /// Kollisionen: wer berührt wen (für `get_touching`, `on_touch`)
+    pub beruehrungen: Beruehrungen,
+    /// Texte auf dem Bildschirm (`ui_text`), nach Schlüssel
+    pub texte: BTreeMap<String, BildschirmText>,
+}
+
+/// Ein Text über dem Spiel (Punkte, Leben …). Position in Pixeln ab links oben im Spielbereich.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BildschirmText {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub groesse: f32,
+    pub farbe: [f32; 4],
 }
 
 /// Das übersetzte Gast-Modul. Das Übersetzen dauert etwas, darum nur einmal pro Sprache.
@@ -92,6 +109,9 @@ impl ScriptMotor {
             stoppen: instanz
                 .get_typed_func(&mut store, "timbre_script_stoppen")
                 .map_err(|_| f("timbre_script_stoppen"))?,
+            beruehrung: instanz
+                .get_typed_func(&mut store, "timbre_beruehrung")
+                .map_err(|_| f("timbre_beruehrung"))?,
             geladen: Vec::new(),
             start: instanz
                 .get_typed_func(&mut store, "timbre_start")
@@ -118,6 +138,7 @@ pub struct ScriptLaufzeit {
     free: TypedFunc<i32, ()>,
     laden: TypedFunc<(i32, i32, i32, i32, i64, i64), i32>,
     stoppen: TypedFunc<i64, ()>,
+    beruehrung: TypedFunc<(i64, i64), ()>,
     /// Script-Objekte, deren Script läuft – verschwindet eins, wird sein Script angehalten.
     geladen: Vec<Objekt>,
     start: TypedFunc<(), ()>,
@@ -219,6 +240,42 @@ impl ScriptLaufzeit {
     pub fn update(&mut self, welt: &mut Welt, dt: f32) {
         self.store.data_mut().zeit += dt as f64;
         self.mit_welt(welt, TREIBSTOFF_UPDATE, |s| s.update.call(&mut s.store, dt));
+        self.verwaiste_anhalten(welt);
+    }
+
+    /// Kollisionen auflösen und neue Berührungen an die Scripts melden: Hängt ein Script unter
+    /// einem der beiden Objekte, wird sein `on_touch(anderes)` aufgerufen.
+    pub fn kollisionen(&mut self, welt: &mut Welt) {
+        let paare = physik::schritt(welt);
+        let neu: Vec<Paar> = self.store.data_mut().beruehrungen.aktualisieren(&paare);
+        if neu.is_empty() || self.abgestuerzt {
+            return;
+        }
+        // Welche geladenen Scripts hängen unter welchem Objekt?
+        let mut aufrufe = Vec::new();
+        for &s in &self.geladen {
+            let Some(eltern) = welt.get::<&Eltern>(s).ok().map(|e| e.0) else {
+                continue;
+            };
+            for &(a, b) in &neu {
+                if eltern == a {
+                    aufrufe.push((s, b));
+                }
+                if eltern == b {
+                    aufrufe.push((s, a));
+                }
+            }
+        }
+        if aufrufe.is_empty() {
+            return;
+        }
+        self.mit_welt(welt, TREIBSTOFF_UPDATE, |l| {
+            for (s, anderes) in aufrufe {
+                l.beruehrung
+                    .call(&mut l.store, (objekt_nummer(s) as i64, objekt_nummer(anderes) as i64))?;
+            }
+            Ok(())
+        });
         self.verwaiste_anhalten(welt);
     }
 
@@ -453,6 +510,119 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
             .unwrap_or(0)
     })?;
 
+    l.func_wrap(
+        M,
+        "get_name",
+        |mut c: Caller<'_, Kontext>, id: i64, aus: i32, platz: i32| -> wasmtime::Result<i32> {
+            let Some(name) = objekt(id).and_then(|o| c.data().welt.get::<&Name>(o).ok().map(|n| n.0.clone())) else {
+                return Ok(-1);
+            };
+            let bytes = name.as_bytes();
+            if bytes.len() <= platz as usize {
+                speicher(&mut c)?.write(&mut c, aus as usize, bytes)?;
+            }
+            Ok(bytes.len() as i32)
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "set_collision",
+        |mut c: Caller<'_, Kontext>, id: i64, form: i32, fest: i32, verankert: i32| {
+            let Some(o) = objekt(id) else { return };
+            let welt = &mut c.data_mut().welt;
+            let form = match form {
+                1 => Form::Kreis,
+                2 => Form::Rechteck,
+                _ => {
+                    let _ = welt.remove_one::<Kollision>(o);
+                    return;
+                }
+            };
+            let _ = welt.insert_one(
+                o,
+                Kollision {
+                    form,
+                    fest: fest != 0,
+                    verankert: verankert != 0,
+                },
+            );
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "get_touching",
+        |mut c: Caller<'_, Kontext>, id: i64, aus: i32, platz: i32| -> wasmtime::Result<i32> {
+            let liste: Vec<Objekt> = objekt(id)
+                .and_then(|o| c.data().beruehrungen.je_objekt.get(&o).cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|o| c.data().welt.contains(*o))
+                .collect();
+            let bytes: Vec<u8> = liste
+                .iter()
+                .take(platz.max(0) as usize)
+                .flat_map(|o| (objekt_nummer(*o) as i64).to_le_bytes())
+                .collect();
+            speicher(&mut c)?.write(&mut c, aus as usize, &bytes)?;
+            Ok(liste.len() as i32)
+        },
+    )?;
+    let maustaste = |t: i32| match t {
+        1 => MouseButton::Right,
+        2 => MouseButton::Middle,
+        _ => MouseButton::Left,
+    };
+    l.func_wrap(M, "mouse_down", move |c: Caller<'_, Kontext>, t: i32| -> i32 {
+        c.data().input.maustaste(maustaste(t)) as i32
+    })?;
+    l.func_wrap(M, "mouse_pressed", move |c: Caller<'_, Kontext>, t: i32| -> i32 {
+        c.data().input.maustaste_neu(maustaste(t)) as i32
+    })?;
+    l.func_wrap(
+        M,
+        "ui_text",
+        |mut c: Caller<'_, Kontext>,
+         kp: i32,
+         kn: i32,
+         tp: i32,
+         tn: i32,
+         x: f32,
+         y: f32,
+         groesse: f32,
+         r: f32,
+         g: f32,
+         b: f32,
+         a: f32|
+         -> wasmtime::Result<()> {
+            let schluessel = text(&mut c, kp, kn)?;
+            let inhalt = text(&mut c, tp, tn)?;
+            c.data_mut().texte.insert(
+                schluessel,
+                BildschirmText {
+                    text: inhalt,
+                    x,
+                    y,
+                    groesse: groesse.clamp(4.0, 200.0),
+                    farbe: [r, g, b, a],
+                },
+            );
+            Ok(())
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "ui_clear",
+        |mut c: Caller<'_, Kontext>, kp: i32, kn: i32| -> wasmtime::Result<()> {
+            let schluessel = text(&mut c, kp, kn)?;
+            if schluessel.is_empty() {
+                c.data_mut().texte.clear();
+            } else {
+                c.data_mut().texte.remove(&schluessel);
+            }
+            Ok(())
+        },
+    )?;
+
     // Die wenigen Systemfunktionen, die die C-Bibliothek im Gast erwartet.
     // Dateien gibt es für Scripts nicht – alles meldet "nicht erlaubt".
     const W: &str = "wasi_snapshot_preview1";
@@ -608,6 +778,98 @@ mod tests {
             meldungen(&mut l),
             vec![Meldung::Info("110 0".into()), Meldung::Info("210 50".into())]
         );
+    }
+
+    #[test]
+    fn task_wait_delay_und_broadcast() {
+        let (mut l, mut welt) = laufzeit();
+        let a = r#"
+            function on_start()
+                print("start")
+                task.wait(0.5)
+                print("nach wait")
+                timbre.broadcast("hallo", 42)
+            end
+            task.delay(0.2, function() print("delay") end)
+            shared.zaehler = 1
+        "#;
+        let b = r#"
+            timbre.ui_text("t", "nur Text", 1, 2)
+            function on_message(name, wert)
+                print("nachricht", name, wert, shared.zaehler)
+            end
+        "#;
+        assert!(l.script_laden(&mut welt, "a", a, None, None));
+        assert!(l.script_laden(&mut welt, "b", b, None, None));
+        assert!(l.script_laden(&mut welt, "c", "function on_update() task.wait(1) end", None, None));
+        l.start(&mut welt);
+        for _ in 0..40 {
+            l.update(&mut welt, 1.0 / 60.0);
+        }
+        let m = meldungen(&mut l);
+        let infos: Vec<String> = m
+            .iter()
+            .filter_map(|x| {
+                if let Meldung::Info(t) = x {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(infos, vec!["start", "delay", "nach wait", "nachricht hallo 42 1"]);
+        // task.wait in on_update ist verboten → verständlicher Fehler, Script c angehalten
+        assert!(m
+            .iter()
+            .any(|x| matches!(x, Meldung::Fehler(t) if t.contains("nicht in on_update"))));
+    }
+
+    #[test]
+    fn on_touch_wird_gemeldet() {
+        use crate::renderer::TexturId;
+        use crate::welt::{Bild, Eltern, Script};
+        let (mut l, mut welt) = laufzeit();
+        let spieler = welt.spawn((
+            Name("Spieler".into()),
+            Transform::default(),
+            Bild::new(TexturId::test(0), Vec2::splat(40.0)),
+            Kollision {
+                form: Form::Kreis,
+                fest: true,
+                verankert: false,
+            },
+        ));
+        let script = welt.spawn((
+            Name("S".into()),
+            Eltern(spieler),
+            Script {
+                datei: "s".into(),
+                aktiv: true,
+            },
+        ));
+        let muenze = welt.spawn((
+            Name("Gold".into()),
+            Transform::bei(Vec2::new(100.0, 0.0)),
+            Bild::new(TexturId::test(0), Vec2::splat(20.0)),
+            Kollision {
+                form: Form::Kreis,
+                fest: false,
+                verankert: true,
+            },
+        ));
+        let quelle = r#"
+            function on_touch(anderes)
+                print("berührt", timbre.get_name(anderes), #timbre.get_touching(script.parent))
+                timbre.destroy(anderes)
+            end
+        "#;
+        assert!(l.script_laden(&mut welt, "s", quelle, Some(script), Some(spieler)));
+        l.start(&mut welt);
+        l.kollisionen(&mut welt); // noch weit weg
+        welt.get::<&mut Transform>(spieler).unwrap().position.x = 80.0;
+        l.kollisionen(&mut welt);
+        assert_eq!(meldungen(&mut l), vec![Meldung::Info("berührt Gold 1".into())]);
+        assert!(!welt.contains(muenze));
     }
 
     #[test]

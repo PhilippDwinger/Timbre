@@ -37,3 +37,12 @@ function on_update(dt)
 
 	timbre.set_camera(x, y, 1)
 end
+
+-- Wird aufgerufen, wenn der Spieler (script.parent) etwas berührt.
+-- Dafür braucht der Spieler eine Kollision (Eigenschaften → + Kollision).
+function on_touch(anderes)
+	if timbre.get_name(anderes) == "Goldstück" then
+		timbre.destroy(anderes)
+		timbre.broadcast("gesammelt")
+	end
+end

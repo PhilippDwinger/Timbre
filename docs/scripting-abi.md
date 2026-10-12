@@ -17,6 +17,10 @@ Schnittstelle. `wit/timbre.wit` beschreibt dieselben Funktionen als Dokumentatio
 | `timbre_free` | `(i32 ptr) → ()` | wieder freigeben |
 | `timbre_laden` | `(i32 name, i32 name_n, i32 quelle, i32 quelle_n, i64 script_id, i64 eltern_id) → i32` | Script laden und Hauptteil ausführen; 0 ok, 1 Syntaxfehler, 2 Laufzeitfehler. IDs 0 = keins; der Gast stellt sie als `script.id` / `script.parent` bereit |
 | `timbre_script_stoppen` | `(i64 script_id) → ()` | Script anhalten (sein Objekt wurde gelöscht) |
+| `timbre_beruehrung` | `(i64 script_id, i64 anderes) → ()` | Das Eltern-Objekt des Scripts hat `anderes` neu berührt → `on_touch` |
+
+`timbre_update` weckt nach den `on_update`-Aufrufen auch fällige `task.wait`/`task.delay`-Aufgaben
+(Zeit = Import `zeit`). `task`, `broadcast`/`on_message` und `shared` leben komplett im Gast.
 | `timbre_start` | `() → ()` | `on_start` aller Scripts |
 | `timbre_update` | `(f32 dt) → ()` | `on_update(dt)` aller Scripts |
 
@@ -35,7 +39,7 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `set_parent` | `(i64 id, i64 eltern)` – 0 = oberste Ebene; Schleifen werden ignoriert |
 | `get_parent` | `(i64) → i64` – 0 = keins |
 | `set_position` | `(i64, f32 x, f32 y)` |
-| `get_position` | `(i64, i32 aus) → i32` – schreibt 2 × f32 nach `aus`; 0 = unbekanntes Objekt |
+| `get_position` | `(i64, i32 aus) → i32` – schreibt 2 × f32 nach `aus`; 0 = unbekanntes Objekt. Position/Drehung immer in Weltkoordinaten |
 | `set_rotation` | `(i64, f32)` |
 | `get_rotation` | `(i64) → f32` |
 | `set_scale` | `(i64, f32 x, f32 y)` |
@@ -45,6 +49,12 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `key_down`, `key_pressed` | `(i32 p, i32 n) → i32` |
 | `mouse_position` | `(i32 aus)` – 2 × f32 |
 | `set_camera` | `(f32 x, f32 y, f32 zoom)` |
+| `get_name` | `(i64, i32 aus, i32 platz) → i32` – Länge in Bytes (−1 = unbekannt); schreibt nur, wenn es passt |
+| `set_collision` | `(i64, i32 form, i32 fest, i32 verankert)` – form 0 = entfernen, 1 = Kreis, 2 = Rechteck |
+| `get_touching` | `(i64, i32 aus, i32 platz) → i32` – Anzahl; schreibt bis zu `platz` × i64 |
+| `mouse_down`, `mouse_pressed` | `(i32 taste) → i32` – 0 links, 1 rechts, 2 Mitte |
+| `ui_text` | `(i32 k, i32 kn, i32 t, i32 tn, f32 x, f32 y, f32 größe, f32 r, f32 g, f32 b, f32 a)` |
+| `ui_clear` | `(i32 k, i32 kn)` – leerer Schlüssel = alle |
 
 Außerdem stellt der Host die wenigen WASI-Funktionen bereit, die eine C-Laufzeit braucht
 (`fd_write`, `fd_close`, `fd_seek`, `fd_fdstat_get`, `clock_time_get`). Dateizugriffe werden abgelehnt.

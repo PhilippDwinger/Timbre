@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use timbre_tbr::{AssetId, Szene};
 
 use crate::assets::Assets;
-use crate::welt::{Bewegung, Bild, Eltern, Name, Objekt, Script, Transform, Welt};
+use crate::welt::{Bewegung, Bild, Eltern, Form, Kollision, Name, Objekt, Script, Transform, Welt};
 
 /// Version des JSON-Inhalts (unabhängig von der `.tbr`-Formatversion).
 const SZENEN_FORMAT: u32 = 0;
@@ -57,6 +57,18 @@ struct ObjektDatei {
     bewegung: Option<BewegungDatei>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     script: Option<ScriptDatei>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kollision: Option<KollisionDatei>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct KollisionDatei {
+    /// "kreis" oder "rechteck"
+    form: String,
+    #[serde(default = "wahr", skip_serializing_if = "ist_wahr")]
+    fest: bool,
+    #[serde(default = "wahr", skip_serializing_if = "ist_wahr")]
+    verankert: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -186,6 +198,14 @@ pub fn speichern(welt: &Welt, assets: &Assets, id: AssetId, name: &str) -> Resul
                 datei: s.datei.clone(),
                 aktiv: s.aktiv,
             }),
+            kollision: welt.get::<&Kollision>(o).ok().map(|k| KollisionDatei {
+                form: match k.form {
+                    Form::Kreis => "kreis".into(),
+                    Form::Rechteck => "rechteck".into(),
+                },
+                fest: k.fest,
+                verankert: k.verankert,
+            }),
         });
     }
 
@@ -263,6 +283,22 @@ pub fn laden(welt: &mut Welt, assets: &Assets, szene: &Szene) -> Result<usize, S
                 aktiv: s.aktiv,
             });
         }
+        if let Some(k) = &o.kollision {
+            let form = match k.form.as_str() {
+                "kreis" => Form::Kreis,
+                "rechteck" => Form::Rechteck,
+                f => {
+                    return Err(format!(
+                        "Objekt {nr}: unbekannte Kollisionsform '{f}' (kreis oder rechteck)"
+                    ))
+                }
+            };
+            b.add(Kollision {
+                form,
+                fest: k.fest,
+                verankert: k.verankert,
+            });
+        }
         baukaesten.push(b);
     }
 
@@ -326,6 +362,15 @@ mod tests {
                 aktiv: true,
             },
         ));
+        welt.spawn((
+            Name("Wand".into()),
+            Transform::default(),
+            Kollision {
+                form: Form::Kreis,
+                fest: false,
+                verankert: true,
+            },
+        ));
         let assets = Assets::default();
         let szene = speichern(&welt, &assets, AssetId::default(), "Test").unwrap();
 
@@ -348,6 +393,15 @@ mod tests {
         );
         let eltern = scripts[1].2.unwrap();
         assert_eq!(neu.get::<&Name>(eltern).unwrap().0, "Spieler");
+        let k = *neu.query::<&Kollision>().iter().next().unwrap();
+        assert_eq!(
+            k,
+            Kollision {
+                form: Form::Kreis,
+                fest: false,
+                verankert: true
+            }
+        );
         // Script-Objekte haben keine Position
         assert!(!szene
             .text
