@@ -22,11 +22,13 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - Java: TeaVM → WASM; ggf. dünner Adapter nötig (Component-Model-Tooling für Java noch unreif).
   - Bonus-Sprachen: Rust, C, C++, C#, Go (TinyGo), Zig, AssemblyScript, JavaScript, Kotlin.
 - **Zweite Steuer-Ebene:** Timbre wird ein **Bridge-Client** in einem Realm und bietet Funktionen an (Szene laden, Objekt spawnen, Mesh exportieren …). Asynchron, für Fernsteuerung aus jeder Sprache mit Bridge-Extension.
+- **ECS:** `hecs` (klein, schnell, läuft im Browser). Objekte ↔ `u64` über `welt::objekt_nummer` / `objekt_aus_nummer` – passt zu `spawn → u64` in `wit/timbre.wit`.
+- **Szenen-Inhalt:** JSON (ein Objekt pro Zeile) im `TEXT`-Block einer Szenen-`.tbr`; Texturen per Asset-ID. Lesbar auch für Grove (JS) und Bridge (Python).
 - **Assets:** eigenes Format `.tbr` (Mesh, Textur, Szene). Assets liegen lokal bzw. später auf Paddys Homeserver – **nicht** in Supabase. Supabase höchstens für Metadaten/Login (Grove-Auth).
 
 ## Aufbau des Repos
 - `crates/timbre-tbr` – `.tbr` lesen/schreiben, **ohne Abhängigkeiten** (auch für Werkzeuge, Grove, Bridge). Spezifikation: `docs/tbr-format.md`.
-- `crates/timbre-core` – Engine: Renderer, Zeit, Input, Kamera (später ECS, Scripting-Host).
+- `crates/timbre-core` – Engine: Renderer, Zeit, Input, Kamera, ECS-Welt (`welt.rs`), Assets (`assets.rs`), Szenen (`szene.rs`); später Scripting-Host.
 - `crates/timbre-app` – Starter + Testszene (nativ und Browser via Trunk).
 - `crates/tbr` – Kommandozeilen-Werkzeug: `tbr info`, `tbr textur` (PNG), `tbr mesh` (glTF/GLB).
 - `assets/quellen` – Ausgangsdateien (PNG, glTF); `assets/texturen`, später `assets/meshes` – fertige `.tbr`.
@@ -42,8 +44,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 ## Meilensteine
 1. [x] Fenster + wgpu: farbiges Dreieck nativ, danach dasselbe im Browser (wasm32-unknown-unknown)
 2. [x] Fixed-Timestep Game Loop, Input, Kamera, Sprite-Rendering mit Batching
-3. [~] Asset-Format `.tbr` v0 (Mesh, Textur, Szene) – wichtigste Entscheidung, alles baut darauf auf
-4. [ ] ECS
+3. [x] Asset-Format `.tbr` v0 (Mesh, Textur, Szene) – wichtigste Entscheidung, alles baut darauf auf
+4. [~] ECS
 5. [ ] WASM-Scripting-Host (wasmtime) + erste Sprache: **Luau**, dann **Lua**
 6. [ ] **Python**, dann **Java**
 7. [ ] Bonus-Sprachen (Rust, C#, JS … zuerst die einfachen)
@@ -65,6 +67,12 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - Folge der Sortierung: Zeichenreihenfolge zwischen Texturen ist noch nicht steuerbar → kommt mit Ebenen/Z-Wert (spätestens mit ECS).
   - Testszene `timbre-app/src/spiel.rs` (Steuerung siehe README), Texturen per Code (`texturen.rs`) bis `.tbr` existiert. Titelzeile zeigt FPS, Logik-Schritte/s, Sprites, Draw Calls.
   - Gemessen (Software-GPU): 12.580 Sprites = 2 Draw Calls.
-- Meilenstein 3, Schritt 1 gebaut (wartet auf Validierung): `.tbr`-Format v0 mit Paddy abgestimmt – ein Container für alles (Kopf + Blöcke, unbekannte Blöcke werden übersprungen), Meshes als Vielecke, Texturen mit optionalen Ebenen, Szenen als Text, Verweise über 128-Bit-Asset-IDs, eigenes Paket `timbre-tbr`, Werkzeug `tbr`.
+- Meilenstein 3 ✅ von Paddy validiert: `.tbr`-Format v0 mit Paddy abgestimmt – ein Container für alles (Kopf + Blöcke, unbekannte Blöcke werden übersprungen), Meshes als Vielecke, Texturen mit optionalen Ebenen, Szenen als Text, Verweise über 128-Bit-Asset-IDs, eigenes Paket `timbre-tbr`, Werkzeug `tbr`.
   - Testszene lädt Texturen jetzt aus `assets/texturen/*.tbr` (per `include_bytes!`, damit es auch im Browser ohne Dateisystem geht). `tbr mesh` an einem glTF mit zwei transformierten Würfeln getestet.
   - Offen für M3: Meshes werden noch nicht gezeichnet (braucht 3D-Renderer), Szenen-Inhalt kommt mit ECS, Laden zur Laufzeit statt `include_bytes!`, optionale Kompression (Flag im Kopf ist reserviert).
+- Meilenstein 4 gebaut (in Claudes Testumgebung geprüft, wartet auf Paddys Validierung):
+  - `welt.rs`: Komponenten `Transform`, `Vorher` (automatisch, für Interpolation), `Bild` (mit `ebene` für die Zeichenreihenfolge), `Bewegung`, `Name`; Systeme `schritt_beginnen`, `bewegen`, `sprites_sammeln`.
+  - Renderer sortiert jetzt nach (Ebene, Textur) → Ebenen-Problem aus M2 gelöst, Batching bleibt (ein Draw Call pro Ebene+Textur).
+  - `assets.rs`: Asset-ID ↔ TexturId. `szene.rs`: Welt ↔ JSON; Laden prüft erst alles, bevor Objekte entstehen (kaputte Szene füllt die Welt nicht halb).
+  - Testszene läuft komplett über die Welt; L = Ebenen tauschen, F5/F9 = Szene speichern/laden (`assets/szenen/gespeichert.tbr`, in .gitignore). `tbr text` zeigt Szeneninhalt.
+  - Offen: Eltern/Kind-Hierarchie (Transform relativ zum Elternobjekt) – kommt, wenn der Editor oder 3D sie braucht.

@@ -6,3 +6,6 @@ dist/
 .vscode/settings.json
 .DS_Store
 Thumbs.db
+
+# Mit F5 gespeicherte Testszene (Laufzeit-Ergebnis, kein Quell-Asset)
+/assets/szenen/gespeichert.tbr

@@ -1,16 +1,20 @@
-//! Testszene für Meilenstein 2: Game Loop, Eingabe, Kamera und Sprite-Batching.
+//! Testszene: Game Loop, Eingabe, Kamera, Sprite-Batching – und seit Meilenstein 4
+//! alles als Objekte in der ECS-Welt.
 //!
 //! Steuerung:
 //!   WASD / Pfeiltasten  Kamera bewegen
 //!   Mausrad / Q, E      Zoomen (zur Maus hin)
 //!   Linke Maustaste     Blätter an der Maus verstreuen
 //!   Leertaste           5.000 Objekte dazu
+//!   L                   Blätter unter / über die Baumscheiben legen (Ebenen)
+//!   F5 / F9             Szene speichern / laden (nur nativ)
 //!   R                   Zurücksetzen
 //!   C                   Alles löschen
 
+use timbre_core::welt::{self, Bewegung, Bild, Name, Transform, Welt};
 use timbre_core::{
-    tbr, vec2, FrameStatistik, Input, Kamera2d, KeyCode, MouseButton, Renderer, Sprite, TexturId,
-    Vec2,
+    vec2, Assets, FrameStatistik, Input, Kamera2d, KeyCode, MouseButton, Renderer, Sprite,
+    TexturId, Vec2,
 };
 
 /// Die Texturen werden vorerst ins Programm eingebaut (funktioniert auch im Browser ohne Dateisystem).
@@ -18,9 +22,17 @@ use timbre_core::{
 const JAHRESRINGE_TBR: &[u8] = include_bytes!("../../../assets/texturen/jahresringe.tbr");
 const BLATT_TBR: &[u8] = include_bytes!("../../../assets/texturen/blatt.tbr");
 
+/// Hierhin speichert F5 die Szene (relativ zum Projektordner).
+#[cfg(not(target_arch = "wasm32"))]
+const SZENEN_PFAD: &str = "assets/szenen/gespeichert.tbr";
+
 /// Spielfeld: halbe Breite/Höhe in Welteinheiten.
 const ARENA: Vec2 = Vec2::new(1600.0, 1000.0);
 const START_ANZAHL: usize = 2_000;
+
+const EBENE_RINGE: i32 = 0;
+const EBENE_BLAETTER_OBEN: i32 = 1;
+const EBENE_BLAETTER_UNTEN: i32 = -1;
 
 /// Holz- und Laubtöne für die Einfärbung.
 const FARBEN: [[f32; 4]; 6] = [
@@ -32,46 +44,40 @@ const FARBEN: [[f32; 4]; 6] = [
     [0.85, 0.40, 0.20, 1.0],
 ];
 
-struct Objekt {
-    position: Vec2,
-    vorher: Vec2,
-    geschwindigkeit: Vec2,
-    drehung: f32,
-    drehung_vorher: f32,
-    drehgeschwindigkeit: f32,
-    groesse: f32,
-    farbe: [f32; 4],
-    textur: TexturId,
-}
-
 pub struct Spiel {
+    welt: Welt,
+    assets: Assets,
     kamera: Kamera2d,
     kamera_vorher: Kamera2d,
-    objekte: Vec<Objekt>,
     sprites: Vec<Sprite>,
     ring: TexturId,
     blatt: TexturId,
+    blaetter_unten: bool,
     zufall: Zufall,
 }
 
 impl Spiel {
     pub fn new(renderer: &mut Renderer) -> Self {
-        let ring = renderer.textur_aus_tbr(
-            &tbr::Textur::aus_bytes(JAHRESRINGE_TBR).expect("jahresringe.tbr kaputt"),
-        );
-        let blatt =
-            renderer.textur_aus_tbr(&tbr::Textur::aus_bytes(BLATT_TBR).expect("blatt.tbr kaputt"));
+        let mut assets = Assets::default();
+        let ring = assets
+            .textur_laden(renderer, JAHRESRINGE_TBR)
+            .expect("jahresringe.tbr kaputt");
+        let blatt = assets
+            .textur_laden(renderer, BLATT_TBR)
+            .expect("blatt.tbr kaputt");
         let kamera = Kamera2d {
             position: Vec2::ZERO,
             zoom: 0.5,
         };
         let mut spiel = Self {
+            welt: Welt::new(),
+            assets,
             kamera,
             kamera_vorher: kamera,
-            objekte: Vec::new(),
             sprites: Vec::new(),
             ring,
             blatt,
+            blaetter_unten: false,
             zufall: Zufall(0x5EED_7175_B4E1),
         };
         spiel.hinzufuegen(START_ANZAHL, None);
@@ -81,12 +87,71 @@ impl Spiel {
     /// Ein Logik-Schritt (fester Zeitschritt `dt`).
     pub fn schritt(&mut self, dt: f32, input: &Input, bildschirm: Vec2) {
         self.kamera_vorher = self.kamera;
-        for o in &mut self.objekte {
-            o.vorher = o.position;
-            o.drehung_vorher = o.drehung;
+        welt::schritt_beginnen(&mut self.welt);
+
+        self.kamera_steuern(dt, input, bildschirm);
+
+        // --- Objekte erzeugen / löschen ---
+        if input.maustaste(MouseButton::Left) {
+            let ort = self
+                .kamera
+                .bildschirm_zu_welt(input.maus_position(), bildschirm);
+            self.hinzufuegen(20, Some(ort));
+        }
+        if input.taste_neu(KeyCode::Space) {
+            self.hinzufuegen(5_000, None);
+        }
+        if input.taste_neu(KeyCode::KeyR) {
+            self.welt.clear();
+            self.hinzufuegen(START_ANZAHL, None);
+            self.kamera = Kamera2d {
+                position: Vec2::ZERO,
+                zoom: 0.5,
+            };
+            self.kamera_vorher = self.kamera;
+        }
+        if input.taste_neu(KeyCode::KeyC) {
+            self.welt.clear();
         }
 
-        // --- Kamera bewegen ---
+        // --- Ebenen: Blätter über/unter die Baumscheiben ---
+        if input.taste_neu(KeyCode::KeyL) {
+            self.blaetter_unten = !self.blaetter_unten;
+            let ebene = if self.blaetter_unten {
+                EBENE_BLAETTER_UNTEN
+            } else {
+                EBENE_BLAETTER_OBEN
+            };
+            for bild in self.welt.query_mut::<&mut Bild>() {
+                if bild.textur == self.blatt {
+                    bild.ebene = ebene;
+                }
+            }
+        }
+
+        // --- Szene speichern / laden ---
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if input.taste_neu(KeyCode::F5) {
+                match self.szene_speichern() {
+                    Ok(meldung) => log::info!("{meldung}"),
+                    Err(e) => log::error!("Speichern fehlgeschlagen: {e}"),
+                }
+            }
+            if input.taste_neu(KeyCode::F9) {
+                match self.szene_laden() {
+                    Ok(meldung) => log::info!("{meldung}"),
+                    Err(e) => log::error!("Laden fehlgeschlagen: {e}"),
+                }
+            }
+        }
+
+        // --- Systeme ---
+        welt::bewegen(&mut self.welt, dt);
+        abprallen(&mut self.welt);
+    }
+
+    fn kamera_steuern(&mut self, dt: f32, input: &Input, bildschirm: Vec2) {
         let mut richtung = Vec2::ZERO;
         if input.taste(KeyCode::KeyW) || input.taste(KeyCode::ArrowUp) {
             richtung.y += 1.0;
@@ -103,7 +168,7 @@ impl Spiel {
         // Geschwindigkeit in Bildschirm-Pixeln pro Sekunde → beim Reinzoomen langsamer in der Welt.
         self.kamera.position += richtung.normalize_or_zero() * 900.0 / self.kamera.zoom * dt;
 
-        // --- Zoomen (Punkt unter der Maus bleibt stehen) ---
+        // Zoomen: der Punkt unter der Maus bleibt stehen.
         let mut zoom_stufen = input.scroll();
         if input.taste(KeyCode::KeyE) {
             zoom_stufen += 4.0 * dt;
@@ -119,58 +184,12 @@ impl Spiel {
             self.kamera.position += vorher - nachher;
             self.kamera_vorher.position += vorher - nachher; // kein Ruckeln beim Zoomen
         }
-
-        // --- Objekte erzeugen / löschen ---
-        if input.maustaste(MouseButton::Left) {
-            let welt = self
-                .kamera
-                .bildschirm_zu_welt(input.maus_position(), bildschirm);
-            self.hinzufuegen(20, Some(welt));
-        }
-        if input.taste_neu(KeyCode::Space) {
-            self.hinzufuegen(5_000, None);
-        }
-        if input.taste_neu(KeyCode::KeyR) {
-            self.objekte.clear();
-            self.hinzufuegen(START_ANZAHL, None);
-            self.kamera = Kamera2d {
-                position: Vec2::ZERO,
-                zoom: 0.5,
-            };
-            self.kamera_vorher = self.kamera;
-        }
-        if input.taste_neu(KeyCode::KeyC) {
-            self.objekte.clear();
-        }
-
-        // --- Bewegen und an den Rändern abprallen ---
-        for o in &mut self.objekte {
-            o.position += o.geschwindigkeit * dt;
-            o.drehung += o.drehgeschwindigkeit * dt;
-            let rand = ARENA - Vec2::splat(o.groesse * 0.5);
-            if o.position.x.abs() > rand.x {
-                o.position.x = o.position.x.clamp(-rand.x, rand.x);
-                o.geschwindigkeit.x = -o.geschwindigkeit.x;
-            }
-            if o.position.y.abs() > rand.y {
-                o.position.y = o.position.y.clamp(-rand.y, rand.y);
-                o.geschwindigkeit.y = -o.geschwindigkeit.y;
-            }
-        }
     }
 
     /// Sprites für den nächsten Frame bauen. `alpha` = Anteil zwischen letztem und nächstem
     /// Logik-Schritt – so bewegt sich alles flüssig, auch wenn öfter gezeichnet als gerechnet wird.
     pub fn sprites_bauen(&mut self, alpha: f32) {
-        self.sprites.clear();
-        self.sprites.extend(self.objekte.iter().map(|o| Sprite {
-            position: o.vorher.lerp(o.position, alpha),
-            groesse: Vec2::splat(o.groesse),
-            drehung: o.drehung_vorher + (o.drehung - o.drehung_vorher) * alpha,
-            farbe: o.farbe,
-            textur: o.textur,
-            uv: [0.0, 0.0, 1.0, 1.0],
-        }));
+        welt::sprites_sammeln(&self.welt, alpha, &mut self.sprites);
     }
 
     pub fn sprites(&self) -> &[Sprite] {
@@ -183,6 +202,11 @@ impl Spiel {
     }
 
     fn hinzufuegen(&mut self, anzahl: usize, ort: Option<Vec2>) {
+        let blatt_ebene = if self.blaetter_unten {
+            EBENE_BLAETTER_UNTEN
+        } else {
+            EBENE_BLAETTER_OBEN
+        };
         for _ in 0..anzahl {
             let z = &mut self.zufall;
             let position = match ort {
@@ -195,17 +219,83 @@ impl Spiel {
             let farbe = FARBEN[(z.naechste() % FARBEN.len() as u64) as usize];
             let groesse = z.bereich(18.0, 56.0);
             let drehgeschwindigkeit = z.bereich(-3.0, 3.0);
-            self.objekte.push(Objekt {
-                position,
-                vorher: position,
-                geschwindigkeit: Vec2::from_angle(winkel) * tempo,
-                drehung: winkel,
-                drehung_vorher: winkel,
-                drehgeschwindigkeit,
-                groesse,
-                farbe,
-                textur: if ist_blatt { self.blatt } else { self.ring },
-            });
+
+            let (name, textur, ebene) = if ist_blatt {
+                ("Blatt", self.blatt, blatt_ebene)
+            } else {
+                ("Baumscheibe", self.ring, EBENE_RINGE)
+            };
+            let mut bild = Bild::new(textur, Vec2::splat(groesse));
+            bild.farbe = farbe;
+            bild.ebene = ebene;
+            self.welt.spawn((
+                Name(name.into()),
+                Transform {
+                    position,
+                    drehung: winkel,
+                    skala: Vec2::ONE,
+                },
+                bild,
+                Bewegung {
+                    linear: Vec2::from_angle(winkel) * tempo,
+                    drehung: drehgeschwindigkeit,
+                },
+            ));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn szene_speichern(&self) -> Result<String, String> {
+        use timbre_core::tbr::{self, AssetId};
+        let pfad = std::path::Path::new(SZENEN_PFAD);
+        // Gibt es die Datei schon, behält sie ihre ID.
+        let id = std::fs::read(pfad)
+            .ok()
+            .and_then(|d| tbr::kopf_lesen(&d).ok())
+            .map(|k| k.id)
+            .unwrap_or_else(AssetId::neu);
+        let szene = timbre_core::szene::speichern(&self.welt, &self.assets, id, "gespeichert")?;
+        if let Some(ordner) = pfad.parent() {
+            std::fs::create_dir_all(ordner).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(pfad, szene.zu_bytes()).map_err(|e| e.to_string())?;
+        Ok(format!(
+            "Szene mit {} Objekten gespeichert: {SZENEN_PFAD}",
+            self.welt.len()
+        ))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn szene_laden(&mut self) -> Result<String, String> {
+        let daten = std::fs::read(SZENEN_PFAD)
+            .map_err(|e| format!("{SZENEN_PFAD}: {e} (erst mit F5 speichern)"))?;
+        let szene = timbre_core::tbr::Szene::aus_bytes(&daten).map_err(|e| e.to_string())?;
+        // In eine neue Welt laden: geht etwas schief, bleibt die alte unverändert.
+        let mut neue_welt = Welt::new();
+        let anzahl = timbre_core::szene::laden(&mut neue_welt, &self.assets, &szene)?;
+        self.welt = neue_welt;
+        self.blaetter_unten = self
+            .welt
+            .query::<&Bild>()
+            .iter()
+            .any(|b| b.ebene == EBENE_BLAETTER_UNTEN);
+        Ok(format!(
+            "Szene mit {anzahl} Objekten geladen: {SZENEN_PFAD}"
+        ))
+    }
+}
+
+/// System der Testszene: an den Rändern des Spielfelds abprallen.
+fn abprallen(welt: &mut Welt) {
+    for (t, b, bild) in welt.query_mut::<(&mut Transform, &mut Bewegung, &Bild)>() {
+        let rand = ARENA - bild.groesse * t.skala * 0.5;
+        if t.position.x.abs() > rand.x {
+            t.position.x = t.position.x.clamp(-rand.x, rand.x);
+            b.linear.x = -b.linear.x;
+        }
+        if t.position.y.abs() > rand.y {
+            t.position.y = t.position.y.clamp(-rand.y, rand.y);
+            b.linear.y = -b.linear.y;
         }
     }
 }

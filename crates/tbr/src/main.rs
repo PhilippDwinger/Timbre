@@ -3,6 +3,7 @@
 //!   tbr info  datei.tbr                  Zeigt, was in einer .tbr-Datei steckt
 //!   tbr textur bild.png  [ziel.tbr]      PNG → Textur
 //!   tbr mesh  modell.glb [ziel.tbr]      glTF/GLB (z. B. aus Blender) → Mesh
+//!   tbr text  szene.tbr                  Inhalt einer Szene als Text ausgeben
 //!
 //! Wird in eine bestehende .tbr-Datei gleichen Typs importiert, bleibt deren Asset-ID
 //! erhalten – Szenen, die darauf verweisen, funktionieren also weiter.
@@ -24,6 +25,7 @@ fn main() -> ExitCode {
         .as_slice()
     {
         ["info", datei] => info(Path::new(datei)),
+        ["text", datei] => szenen_text(Path::new(datei)),
         ["textur", quelle] => textur(Path::new(quelle), &ziel_neben(quelle)),
         ["textur", quelle, ziel] => textur(Path::new(quelle), Path::new(ziel)),
         ["mesh", quelle] => mesh(Path::new(quelle), &ziel_neben(quelle)),
@@ -48,7 +50,8 @@ fn hilfe() {
          Benutzung:\n  \
          tbr info   datei.tbr              Inhalt anzeigen\n  \
          tbr textur bild.png  [ziel.tbr]   PNG in Textur umwandeln\n  \
-         tbr mesh   modell.glb [ziel.tbr]  glTF/GLB in Mesh umwandeln\n\n\
+         tbr mesh   modell.glb [ziel.tbr]  glTF/GLB in Mesh umwandeln\n  \
+         tbr text   szene.tbr              Inhalt einer Szene anzeigen\n\n\
          Ohne Ziel wird neben der Quelle eine .tbr-Datei mit gleichem Namen angelegt.",
         env!("CARGO_PKG_VERSION")
     );
@@ -122,6 +125,14 @@ fn info(pfad: &Path) -> Ergebnis<()> {
         }
         Asset::Szene(s) => println!("  Zeilen:   {}", s.text.lines().count()),
     }
+    Ok(())
+}
+
+fn szenen_text(pfad: &Path) -> Ergebnis<()> {
+    let szene = timbre_tbr::Szene::aus_bytes(&lesen(pfad)?).map_err(|e| e.to_string())?;
+    // Fehler beim Ausgeben ignorieren (z. B. wenn die Ausgabe vorzeitig abgebrochen wird).
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout().lock(), "{}", szene.text);
     Ok(())
 }
 

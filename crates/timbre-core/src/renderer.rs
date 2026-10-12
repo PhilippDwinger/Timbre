@@ -26,6 +26,13 @@ const HINTERGRUND: wgpu::Color = wgpu::Color {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TexturId(u32);
 
+impl TexturId {
+    #[cfg(test)]
+    pub(crate) fn test(n: u32) -> Self {
+        Self(n)
+    }
+}
+
 /// Ein Bild in der Welt.
 #[derive(Clone, Copy, Debug)]
 pub struct Sprite {
@@ -38,6 +45,8 @@ pub struct Sprite {
     pub textur: TexturId,
     /// Ausschnitt der Textur: x, y, Breite, Höhe (0..1). Standard: ganze Textur.
     pub uv: [f32; 4],
+    /// Zeichenreihenfolge: höhere Ebenen liegen oben.
+    pub ebene: i32,
 }
 
 impl Sprite {
@@ -49,6 +58,7 @@ impl Sprite {
             farbe: [1.0; 4],
             textur,
             uv: [0.0, 0.0, 1.0, 1.0],
+            ebene: 0,
         }
     }
 }
@@ -85,7 +95,7 @@ pub struct Renderer {
     instanz_puffer: wgpu::Buffer,
     instanz_kapazitaet: usize,
     // Wiederverwendete Arbeitslisten, damit nicht jeden Frame neu Speicher angefordert wird.
-    sortiert: Vec<(TexturId, SpriteInstanz)>,
+    sortiert: Vec<((i32, TexturId), SpriteInstanz)>,
     instanzen: Vec<SpriteInstanz>,
 }
 
@@ -357,12 +367,13 @@ impl Renderer {
             bytemuck::cast_slice(&matrix.to_cols_array()),
         );
 
-        // 2. Sprites nach Textur sortieren → gleiche Texturen liegen hintereinander.
-        //    Stabil sortieren, damit die Zeichenreihenfolge innerhalb einer Textur erhalten bleibt.
+        // 2. Sprites nach (Ebene, Textur) sortieren: Ebenen bestimmen, was oben liegt,
+        //    und innerhalb einer Ebene liegen gleiche Texturen hintereinander → wenige Draw Calls.
+        //    Stabil sortieren, damit die Reihenfolge innerhalb einer Gruppe erhalten bleibt.
         self.sortiert.clear();
         self.sortiert.extend(sprites.iter().map(|s| {
             (
-                s.textur,
+                (s.ebene, s.textur),
                 SpriteInstanz {
                     position: s.position.to_array(),
                     groesse: s.groesse.to_array(),
@@ -393,7 +404,7 @@ impl Renderer {
             );
         }
 
-        // 4. Zeichnen: ein Draw Call pro zusammenhängender Textur-Gruppe.
+        // 4. Zeichnen: ein Draw Call pro zusammenhängender Gruppe (gleiche Ebene + Textur).
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -423,12 +434,12 @@ impl Renderer {
 
             let mut start = 0;
             while start < self.sortiert.len() {
-                let textur = self.sortiert[start].0;
+                let gruppe = self.sortiert[start].0;
                 let mut ende = start;
-                while ende < self.sortiert.len() && self.sortiert[ende].0 == textur {
+                while ende < self.sortiert.len() && self.sortiert[ende].0 == gruppe {
                     ende += 1;
                 }
-                pass.set_bind_group(1, &self.texturen[textur.0 as usize], &[]);
+                pass.set_bind_group(1, &self.texturen[gruppe.1 .0 as usize], &[]);
                 pass.draw(0..6, start as u32..ende as u32);
                 draw_calls += 1;
                 start = ende;

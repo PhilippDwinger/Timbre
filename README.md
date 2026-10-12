@@ -21,13 +21,15 @@ trunk serve --open
 ```
 Braucht einen Browser mit WebGPU (Chrome oder Edge).
 
-## Testszene (Meilenstein 2)
+## Testszene
 | Taste | Wirkung |
 |---|---|
 | WASD / Pfeiltasten | Kamera bewegen |
 | Mausrad / Q, E | Zoomen (zur Maus hin) |
 | Linke Maustaste halten | Blätter an der Maus verstreuen |
 | Leertaste | 5.000 Objekte dazu |
+| L | Blätter unter / über die Baumscheiben legen (Ebenen) |
+| F5 / F9 | Szene speichern / laden (`assets\szenen\gespeichert.tbr`) |
 | R | Zurücksetzen |
 | C | Alles löschen |
 | Esc | Beenden (nur nativ) |
@@ -39,6 +41,7 @@ Die Titelzeile zeigt FPS, Logik-Schritte pro Sekunde, Anzahl Sprites und Draw Ca
 cargo run -p tbr -- textur assets\quellen\blatt.png assets\texturen\blatt.tbr
 cargo run -p tbr -- mesh assets\quellen\kiste.glb assets\meshes\kiste.tbr
 cargo run -p tbr -- info assets\texturen\blatt.tbr
+cargo run -p tbr -- text assets\szenen\gespeichert.tbr
 ```
 Wird erneut in dieselbe `.tbr`-Datei importiert, bleibt ihre Asset-ID erhalten.
 Aus Blender: *Datei → Exportieren → glTF 2.0 (.glb)*. Formatbeschreibung: `docs/tbr-format.md`.
