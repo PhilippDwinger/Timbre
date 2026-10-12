@@ -26,6 +26,11 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - **Zweite Steuer-Ebene:** Timbre wird ein **Bridge-Client** in einem Realm und bietet Funktionen an (Szene laden, Objekt spawnen, Mesh exportieren …). Asynchron, für Fernsteuerung aus jeder Sprache mit Bridge-Extension.
 - **ECS:** `hecs` (klein, schnell, läuft im Browser). Objekte ↔ `u64` über `welt::objekt_nummer` / `objekt_aus_nummer` – passt zu `spawn → u64` in `wit/timbre.wit`.
 - **Szenen-Inhalt:** JSON (ein Objekt pro Zeile) im `TEXT`-Block einer Szenen-`.tbr`; Texturen per Asset-ID. Lesbar auch für Grove (JS) und Bridge (Python).
+- **Scripts sind Objekte** (Paddys Vorgabe, Roblox-Prinzip): Komponente `Script { datei, aktiv }` + optional `Eltern(Objekt)`. Quelltext bleibt Datei in `scripts/` (für Git/VS Code); Name ändern = Datei umbenennen (beim Speichern). Dateien ohne Script-Objekt wandern beim Speichern nach `scripts/.papierkorb/`. Ältere Projekte: lose `.luau`-Dateien werden beim Laden zu Script-Objekten.
+- **Baum:** `Eltern`-Komponente, Löschen entfernt Nachkommen (`welt::entfernen`).
+- **Transform ist relativ zum nächsten Vorfahren mit Transform** (Ordner/Scripts ohne Transform zählen nicht). `welt::welt_transform` / `welt_transform_setzen` rechnen um; `eltern_setzen` hängt um, ohne dass das Objekt springt. Script-API (`get/set_position`, `get/set_rotation`) arbeitet in **Weltkoordinaten** (wie Roblox `Position`), das Eigenschaften-Panel zeigt lokale Werte.
+- **Rückgängig** = Schnappschüsse des Szenen-JSON (max. 100), gemerkt nach abgeschlossener Änderung (`markieren()` an jeder Änderungsstelle im Studio aufrufen!).
+- **Reihenfolge:** Paddy will erst die Engine verbessern, dann weitere Sprachen.
 - **Assets:** eigenes Format `.tbr` (Mesh, Textur, Szene). Assets liegen lokal bzw. später auf Paddys Homeserver – **nicht** in Supabase. Supabase höchstens für Metadaten/Login (Grove-Auth).
 
 ## Aufbau des Repos
@@ -80,7 +85,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - `assets.rs`: Asset-ID ↔ TexturId. `szene.rs`: Welt ↔ JSON; Laden prüft erst alles, bevor Objekte entstehen (kaputte Szene füllt die Welt nicht halb).
   - Testszene läuft komplett über die Welt; L = Ebenen tauschen, F5/F9 = Szene speichern/laden (`assets/szenen/gespeichert.tbr`, in .gitignore). `tbr text` zeigt Szeneninhalt.
   - Offen: Eltern/Kind-Hierarchie (Transform relativ zum Elternobjekt) – kommt, wenn der Editor oder 3D sie braucht.
-- Meilenstein 5, Schritt 1 gebaut (in Claudes Testumgebung mit Software-GPU, Screenshots und simulierten Eingaben geprüft; wartet auf Paddys Validierung):
+- Meilenstein 5, Schritt 1 ✅ von Paddy validiert („schon sehr gut“):
   - Luau als WASM-Gast läuft in wasmtime: Syntax- und Laufzeitfehler werden gemeldet (Datei:Zeile), Fehler hält nur das betroffene Script an, Endlosschleifen werden per Fuel abgebrochen, jedes Script hat eigene Umgebung (Sandbox). 4 Tests in `scripting.rs`.
   - Timbre Studio mit egui 0.36 (passt zu wgpu 30/winit 0.30): Leiste (▶/■, Speichern, FPS), Objektliste, Eigenschaften (Name, Transform, Bild, Bewegung), Reiter Szene + Scripts mit Luau-Editor, Konsole. F5 = Ausführen/Stopp, Strg+S = Speichern, Entf = Löschen.
   - Ausführen: Scripts werden gespeichert, Szene als Schnappschuss (Szenen-JSON) gemerkt; Stopp lädt den Schnappschuss → alles wie vorher.
@@ -88,4 +93,17 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - `[profile.dev.package."*"] opt-level = 2`: sonst übersetzt wasmtime das Luau-Modul im Debug-Build extrem langsam.
   - Alte Blätter-Testszene (`spiel.rs`) entfernt – ihre Ideen leben im Beispielprojekt als Luau-Scripts weiter.
   - Browser-Build des Studios nicht geprüft (Claude kann hier kein wasm32 bauen); Scripts im Browser kommen mit M8.
-  - Nächste Schritte M5: Lua 5.4 als zweite Sprache (gleiches Gast-Prinzip), Script umbenennen/löschen im Studio, Hot Reload während des Laufens, Maus-Tasten für Scripts.
+- Meilenstein 5, Schritt 2 ✅ von Paddy validiert: Scripts als Objekte.
+  - Explorer als Baum (Scripts zuerst, natürlich sortiert, große Ordner zugeklappt), Doppelklick öffnet Script bzw. fährt Kamera zum Objekt, Rechtsklick-Menü (Script hinzufügen, Duplizieren, Löschen), Strg+D dupliziert samt Kindern.
+  - Eigenschaften: Name, Eltern (Auswahlliste, Schleifen ausgeschlossen), Script-Bereich (Sprache, Datei, Aktiviert, Zeilen, Öffnen).
+  - Script-Reiter mit × schließbar; Puffer nach Dateiname (überlebt ■ Stopp, weil sich Objekt-IDs beim Zurücksetzen ändern).
+  - Szenen-JSON: `id` (nur bei Objekten mit Kindern), `eltern`, `script {datei, aktiv}`, `position` optional. Test `baum_und_scripts_hin_und_zurueck`.
+  - ABI: `timbre_laden` bekommt `script_id`, `eltern_id`; neues Export `timbre_script_stoppen`; neue Importe `set_parent`, `get_parent`. In Luau: `script.name/id/parent`.
+  - Beispielprojekt: `Steuerung` hängt unter `Spieler` und nutzt `script.parent`; `Laubregen` legt seine Blätter in einen Ordner `Laub` unter sich.
+  - `rustfmt.toml` mit `max_width = 120`.
+- Paket 1 „Editor-Grundlagen“ gebaut (in Claudes Testumgebung geprüft, wartet auf Validierung):
+  - Rückgängig/Wiederholen (Strg+Z / Strg+Y / Strg+Umschalt+Z, Knöpfe ↶ ↷) für alle Szenen-Änderungen; Script-Puffer bleiben im Speicher, damit Rückgängig gelöschte/umbenannte Scripts zurückholen kann.
+  - Drag & Drop im Explorer (auf Objekt = Kind, auf freie Fläche = oberste Ebene, Schleifen verweigert).
+  - Kinder bewegen sich mit (Position, Drehung, Skala), auch über Ordner ohne Transform hinweg; interpoliert gezeichnet. Tests `kinder_bewegen_sich_mit`, `positionen_von_kindern_sind_weltkoordinaten`.
+  - Fehler in der Konsole anklickbar → Script öffnet sich, Cursor + Scroll zur Zeile, Zeile rot hinterlegt (bis zur nächsten Änderung oder ▶). Editor hat Zeilennummern.
+  - Ideen-Liste danach: Paket 2 (Kollisionen + on_touch, mehr Script-API: Maus, wait/Timer, Nachrichten, Bildschirmtext; Gitter/Einrasten, Dreh-/Skalier-Griffe), Paket 3 (PNG-Import per Drag & Drop, Sounds), Paket 4 (Live-Neuladen von Scripts, Autovervollständigung). Danach weitere Sprachen.

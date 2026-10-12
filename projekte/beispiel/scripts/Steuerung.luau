@@ -1,16 +1,16 @@
--- Spieler: mit WASD oder den Pfeiltasten steuern. Die Kamera folgt.
+-- Steuerung: bewegt das Objekt, unter dem dieses Script hängt (script.parent),
+-- mit WASD oder den Pfeiltasten. Die Kamera folgt.
 --
 -- Jedes Script kann zwei Funktionen haben:
 --   on_start()      läuft einmal, wenn du auf ▶ drückst
 --   on_update(dt)   läuft 60-mal pro Sekunde; dt = Sekunden seit dem letzten Mal
 
 local TEMPO = 320 -- Welteinheiten pro Sekunde
-local spieler
+local spieler = script.parent
 
 function on_start()
-	spieler = timbre.find("Spieler")
 	if not spieler then
-		print("Kein Objekt 'Spieler' in der Szene – lege eins an!")
+		print("Hänge dieses Script im Explorer unter das Objekt, das es steuern soll!")
 	end
 end
 

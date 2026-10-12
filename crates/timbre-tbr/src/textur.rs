@@ -53,12 +53,7 @@ impl Mischmodus {
 impl Textur {
     /// Neue Textur mit frischer ID.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn neu(
-        name: impl Into<String>,
-        breite: u32,
-        hoehe: u32,
-        pixel: Vec<u8>,
-    ) -> Result<Self, TbrFehler> {
+    pub fn neu(name: impl Into<String>, breite: u32, hoehe: u32, pixel: Vec<u8>) -> Result<Self, TbrFehler> {
         let t = Self {
             id: AssetId::neu(),
             name: name.into(),

@@ -15,7 +15,8 @@ Schnittstelle. `wit/timbre.wit` beschreibt dieselben Funktionen als Dokumentatio
 | `_initialize` | `() → ()` | optional, einmal nach dem Laden (C-Laufzeit) |
 | `timbre_alloc` | `(i32 n) → i32 ptr` | Speicher für Texte vom Host |
 | `timbre_free` | `(i32 ptr) → ()` | wieder freigeben |
-| `timbre_laden` | `(i32 name, i32 name_n, i32 quelle, i32 quelle_n) → i32` | Script laden und Hauptteil ausführen; 0 ok, 1 Syntaxfehler, 2 Laufzeitfehler |
+| `timbre_laden` | `(i32 name, i32 name_n, i32 quelle, i32 quelle_n, i64 script_id, i64 eltern_id) → i32` | Script laden und Hauptteil ausführen; 0 ok, 1 Syntaxfehler, 2 Laufzeitfehler. IDs 0 = keins; der Gast stellt sie als `script.id` / `script.parent` bereit |
+| `timbre_script_stoppen` | `(i64 script_id) → ()` | Script anhalten (sein Objekt wurde gelöscht) |
 | `timbre_start` | `() → ()` | `on_start` aller Scripts |
 | `timbre_update` | `(f32 dt) → ()` | `on_update(dt)` aller Scripts |
 
@@ -30,7 +31,9 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `log`, `fehler` | `(i32 p, i32 n)` |
 | `zeit` | `() → f64` |
 | `spawn`, `find` | `(i32 p, i32 n) → i64` (find: 0 = nicht gefunden) |
-| `destroy` | `(i64)` |
+| `destroy` | `(i64)` – löscht auch alle Kinder |
+| `set_parent` | `(i64 id, i64 eltern)` – 0 = oberste Ebene; Schleifen werden ignoriert |
+| `get_parent` | `(i64) → i64` – 0 = keins |
 | `set_position` | `(i64, f32 x, f32 y)` |
 | `get_position` | `(i64, i32 aus) → i32` – schreibt 2 × f32 nach `aus`; 0 = unbekanntes Objekt |
 | `set_rotation` | `(i64, f32)` |

@@ -125,11 +125,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Baut den Renderer für ein Fenster. `breite`/`hoehe` in Pixeln.
-    pub async fn new(
-        ziel: impl Into<wgpu::SurfaceTarget<'static>>,
-        breite: u32,
-        hoehe: u32,
-    ) -> Self {
+    pub async fn new(ziel: impl Into<wgpu::SurfaceTarget<'static>>, breite: u32, hoehe: u32) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
             .create_surface(ziel)
@@ -424,14 +420,10 @@ impl Renderer {
                 return None;
             }
         };
-        let view = textur
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = textur.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame"),
-            });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Frame") });
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Hintergrund"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -484,11 +476,8 @@ impl Renderer {
 
         // 1. Kamera-Matrix hochladen
         let matrix = kamera.matrix(Vec2::new(b, h));
-        self.queue.write_buffer(
-            &self.kamera_puffer,
-            0,
-            bytemuck::cast_slice(&matrix.to_cols_array()),
-        );
+        self.queue
+            .write_buffer(&self.kamera_puffer, 0, bytemuck::cast_slice(&matrix.to_cols_array()));
         // 2. Sprites nach (Ebene, Textur) sortieren: Ebenen bestimmen, was oben liegt,
         //    und innerhalb einer Ebene liegen gleiche Texturen hintereinander → wenige Draw Calls.
         //    Stabil sortieren, damit die Reihenfolge innerhalb einer Gruppe erhalten bleibt.
@@ -513,37 +502,29 @@ impl Renderer {
         if self.instanzen.len() > self.instanz_kapazitaet {
             self.instanz_kapazitaet = self.instanzen.len().next_power_of_two();
             self.instanz_puffer = Self::instanz_puffer_bauen(&self.device, self.instanz_kapazitaet);
-            log::info!(
-                "Sprite-Puffer vergrößert auf {} Plätze",
-                self.instanz_kapazitaet
-            );
+            log::info!("Sprite-Puffer vergrößert auf {} Plätze", self.instanz_kapazitaet);
         }
         if !self.instanzen.is_empty() {
-            self.queue.write_buffer(
-                &self.instanz_puffer,
-                0,
-                bytemuck::cast_slice(&self.instanzen),
-            );
+            self.queue
+                .write_buffer(&self.instanz_puffer, 0, bytemuck::cast_slice(&self.instanzen));
         }
 
         // 4. Zeichnen: ein Draw Call pro zusammenhängender Gruppe (gleiche Ebene + Textur).
         let mut draw_calls = 0;
         {
-            let mut pass = frame
-                .encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Hauptpass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &frame.view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
+            let mut pass = frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Hauptpass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
             pass.set_viewport(x, y, b, h, 0.0, 1.0);
             pass.set_scissor_rect(x as u32, y as u32, b as u32, h as u32);
             pass.set_pipeline(&self.pipeline);

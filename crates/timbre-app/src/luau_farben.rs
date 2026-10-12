@@ -6,9 +6,8 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, Galley, Ui};
 
 const SCHLUESSELWOERTER: &[&str] = &[
-    "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for",
-    "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true",
-    "type", "until", "while",
+    "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
 ];
 
 struct Farben {
@@ -45,14 +44,25 @@ fn farben(dunkel: bool) -> Farben {
     }
 }
 
-/// Text des Editors in farbige Abschnitte zerlegen.
-pub fn layout(ui: &Ui, text: &str, wrap_breite: f32) -> Arc<Galley> {
+/// Schriftgröße im Script-Editor (auch für die Zeilennummern).
+pub const SCHRIFTGROESSE: f32 = 13.5;
+
+/// Text des Editors in farbige Abschnitte zerlegen. `markiert` = Zeile (ab 1), die rot
+/// hinterlegt wird (z. B. Fehlerzeile).
+pub fn layout(ui: &Ui, text: &str, wrap_breite: f32, markiert: Option<usize>) -> Arc<Galley> {
     let f = farben(ui.visuals().dark_mode);
-    let schrift = FontId::monospace(13.5);
+    let schrift = FontId::monospace(SCHRIFTGROESSE);
+    let markierung = Color32::from_rgba_unmultiplied(0xE5, 0x6B, 0x5D, 45);
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_breite;
-    let abschnitt = |job: &mut LayoutJob, teil: &str, farbe: Color32| {
-        job.append(teil, 0.0, TextFormat::simple(schrift.clone(), farbe));
+    let mut zeile = 1usize;
+    let mut abschnitt = |job: &mut LayoutJob, teil: &str, farbe: Color32| {
+        let mut format = TextFormat::simple(schrift.clone(), farbe);
+        if Some(zeile) == markiert {
+            format.background = markierung;
+        }
+        job.append(teil, 0.0, format);
+        zeile += teil.matches('\n').count();
     };
 
     let bytes = text.as_bytes();

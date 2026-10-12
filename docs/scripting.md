@@ -1,7 +1,16 @@
 # Scripts in Timbre (Luau)
 
-Scripts liegen im Projektordner unter `scripts/*.luau` und werden in **Timbre Studio**
-geschrieben. **▶ Ausführen** (oder **F5**) startet alle Scripts, **■ Stopp** hält sie an und
+Scripts sind **Objekte** in der Szene – wie in Roblox. Sie stehen im **Explorer**, gern unter
+dem Objekt, das sie steuern sollen. Der Quelltext liegt als Datei unter `scripts/<Name>.luau`.
+
+- **Neues Script:** „+ Script“ im Explorer (landet unter dem ausgewählten Objekt) oder
+  Rechtsklick auf ein Objekt → „Script hinzufügen“.
+- **Öffnen:** Doppelklick im Explorer.
+- **Eigenschaften:** Name (benennt auch die Datei um), Eltern, Aktiviert.
+- **Löschen:** Entf oder Rechtsklick → Löschen. Beim Speichern wandert die Datei nach
+  `scripts/.papierkorb/` – nichts geht verloren.
+
+**▶ Ausführen** (oder **F5**) startet alle aktivierten Scripts, **■ Stopp** hält sie an und
 setzt die Szene auf den Stand von vor dem Start zurück.
 
 ## Aufbau eines Scripts
@@ -20,6 +29,16 @@ end
 ```
 
 Jedes Script hat seine eigenen Variablen – zwei Scripts sehen die Variablen des anderen nicht.
+
+Jedes Script kennt sich selbst über `script`:
+
+| Feld | Bedeutung |
+|---|---|
+| `script.name` | Name des Script-Objekts |
+| `script.id` | Objekt-ID des Scripts |
+| `script.parent` | Objekt, unter dem das Script hängt (oder `nil`) – wie `script.Parent` in Roblox |
+
+Wird das Script-Objekt gelöscht (z. B. zusammen mit seinem Eltern-Objekt), hört das Script auf.
 Fehler stehen rot in der Konsole (mit Datei und Zeile). Ein Script mit Fehler in `on_update`
 wird angehalten, die anderen laufen weiter. Endlosschleifen werden abgebrochen.
 
@@ -33,7 +52,9 @@ Objekte sind Zahlen (IDs). `print(...)` schreibt in die Konsole.
 | `timbre.time()` | Sekunden seit ▶ |
 | `timbre.spawn(name)` → id | Neues Objekt (unsichtbar, bis es ein Bild bekommt) |
 | `timbre.find(name)` → id oder nil | Erstes Objekt mit diesem Namen |
-| `timbre.destroy(id)` | Objekt löschen |
+| `timbre.destroy(id)` | Objekt löschen (samt Kindern) |
+| `timbre.set_parent(id, eltern)` | Unter ein anderes Objekt hängen (`nil` = oberste Ebene) |
+| `timbre.get_parent(id)` → id oder nil | Eltern-Objekt |
 | `timbre.set_position(id, x, y)` | Position setzen |
 | `timbre.get_position(id)` → x, y | Position lesen |
 | `timbre.set_rotation(id, winkel)` | Drehung im Bogenmaß (`math.rad(90)` = 90°) |
@@ -51,6 +72,11 @@ Tastennamen: `"A"`–`"Z"`, `"0"`–`"9"`, `"Space"`, `"Enter"`, `"Escape"`, `"S
 `"Tab"`, `"Up"`, `"Down"`, `"Left"`, `"Right"` (Groß-/Kleinschreibung egal).
 
 Koordinaten: Bei Zoom 1 ist eine Einheit ein Pixel, **y zeigt nach oben**.
+
+**Kinder bewegen sich mit ihrem Eltern-Objekt.** `get_position`/`set_position` und
+`get_rotation`/`set_rotation` arbeiten trotzdem immer mit der Lage **in der Welt** – du musst
+nicht umrechnen. (Im Eigenschaften-Fenster des Studios stehen dagegen die Werte relativ zum
+Eltern-Objekt.) `set_parent` hängt um, ohne dass das Objekt springt.
 
 ## Luau
 

@@ -68,20 +68,11 @@ mod tests {
             zoom: 2.0,
         };
         let b = Vec2::new(800.0, 600.0);
-        assert_eq!(
-            k.bildschirm_zu_welt(Vec2::new(400.0, 300.0), b),
-            Vec2::new(100.0, 50.0)
-        );
+        assert_eq!(k.bildschirm_zu_welt(Vec2::new(400.0, 300.0), b), Vec2::new(100.0, 50.0));
         // 200 px rechts von der Mitte bei Zoom 2 = 100 Welteinheiten
-        assert_eq!(
-            k.bildschirm_zu_welt(Vec2::new(600.0, 300.0), b),
-            Vec2::new(200.0, 50.0)
-        );
+        assert_eq!(k.bildschirm_zu_welt(Vec2::new(600.0, 300.0), b), Vec2::new(200.0, 50.0));
         // oben am Bildschirm = größeres y
-        assert_eq!(
-            k.bildschirm_zu_welt(Vec2::new(400.0, 0.0), b),
-            Vec2::new(100.0, 200.0)
-        );
+        assert_eq!(k.bildschirm_zu_welt(Vec2::new(400.0, 0.0), b), Vec2::new(100.0, 200.0));
     }
 
     #[test]

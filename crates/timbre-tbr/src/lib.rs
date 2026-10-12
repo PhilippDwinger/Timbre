@@ -169,8 +169,7 @@ impl DateiSchreiber {
 
     fn block(&mut self, name: &[u8; 4], daten: &[u8]) {
         self.s.bytes(name);
-        self.s
-            .u32(u32::try_from(daten.len()).expect("Block größer als 4 GB"));
+        self.s.u32(u32::try_from(daten.len()).expect("Block größer als 4 GB"));
         self.s.bytes(daten);
     }
 
@@ -180,8 +179,7 @@ impl DateiSchreiber {
 }
 
 fn text(block: &Block) -> Result<String, TbrFehler> {
-    String::from_utf8(block.daten.to_vec())
-        .map_err(|_| TbrFehler::Kaputt("Text ist kein gültiges UTF-8"))
+    String::from_utf8(block.daten.to_vec()).map_err(|_| TbrFehler::Kaputt("Text ist kein gültiges UTF-8"))
 }
 
 fn f32_liste(daten: &[u8]) -> Result<Vec<f32>, TbrFehler> {

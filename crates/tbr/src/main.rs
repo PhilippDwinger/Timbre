@@ -19,12 +19,7 @@ type Ergebnis<T> = Result<T, String>;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let ergebnis = match args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
+    let ergebnis = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["info", datei] => info(Path::new(datei)),
         ["text", datei] => szenen_text(Path::new(datei)),
         ["szene", quelle] => szene(Path::new(quelle), &ziel_neben(quelle)),
@@ -77,8 +72,7 @@ fn lesen(pfad: &Path) -> Ergebnis<Vec<u8>> {
 }
 
 fn schreiben(pfad: &Path, daten: &[u8]) -> Ergebnis<()> {
-    std::fs::write(pfad, daten)
-        .map_err(|e| format!("{} kann nicht geschrieben werden: {e}", pfad.display()))
+    std::fs::write(pfad, daten).map_err(|e| format!("{} kann nicht geschrieben werden: {e}", pfad.display()))
 }
 
 /// ID einer bestehenden Zieldatei gleichen Typs übernehmen, sonst neue ID.
@@ -118,14 +112,8 @@ fn info(pfad: &Path) -> Ergebnis<()> {
                 m.eckenzahl.len(),
                 m.dreiecke().len() / 3
             );
-            println!(
-                "  Normalen: {}",
-                if m.normalen.is_empty() { "nein" } else { "ja" }
-            );
-            println!(
-                "  UVs:      {}",
-                if m.uvs.is_empty() { "nein" } else { "ja" }
-            );
+            println!("  Normalen: {}", if m.normalen.is_empty() { "nein" } else { "ja" });
+            println!("  UVs:      {}", if m.uvs.is_empty() { "nein" } else { "ja" });
         }
         Asset::Szene(s) => println!("  Zeilen:   {}", s.text.lines().count()),
     }
@@ -167,15 +155,12 @@ fn textur(quelle: &Path, ziel: &Path) -> Ergebnis<()> {
 
 /// Liest ein PNG beliebiger Art (Graustufen, Palette, 16 Bit …) als RGBA mit 8 Bit.
 fn png_lesen(pfad: &Path) -> Ergebnis<(u32, u32, Vec<u8>)> {
-    let datei = std::fs::File::open(pfad)
-        .map_err(|e| format!("{} kann nicht geöffnet werden: {e}", pfad.display()))?;
+    let datei = std::fs::File::open(pfad).map_err(|e| format!("{} kann nicht geöffnet werden: {e}", pfad.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(datei));
     decoder.set_transformations(
         png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA,
     );
-    let mut reader = decoder
-        .read_info()
-        .map_err(|e| format!("kein gültiges PNG: {e}"))?;
+    let mut reader = decoder.read_info().map_err(|e| format!("kein gültiges PNG: {e}"))?;
     let mut puffer = vec![0; reader.output_buffer_size().ok_or("PNG ist zu groß")?];
     let info = reader
         .next_frame(&mut puffer)
@@ -184,10 +169,7 @@ fn png_lesen(pfad: &Path) -> Ergebnis<(u32, u32, Vec<u8>)> {
 
     let rgba = match info.color_type {
         png::ColorType::Rgba => puffer,
-        png::ColorType::GrayscaleAlpha => puffer
-            .chunks_exact(2)
-            .flat_map(|p| [p[0], p[0], p[0], p[1]])
-            .collect(),
+        png::ColorType::GrayscaleAlpha => puffer.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
         andere => return Err(format!("unerwartetes PNG-Farbformat {andere:?}")),
     };
     Ok((info.width, info.height, rgba))
@@ -239,11 +221,7 @@ fn mesh(quelle: &Path, ziel: &Path) -> Ergebnis<()> {
             let anzahl = m.positionen.len() - start as usize;
 
             match leser.read_normals() {
-                Some(n) => normalen.extend(n.map(|n| {
-                    (normal_matrix * Vec3::from(n))
-                        .normalize_or_zero()
-                        .to_array()
-                })),
+                Some(n) => normalen.extend(n.map(|n| (normal_matrix * Vec3::from(n)).normalize_or_zero().to_array())),
                 None => hat_normalen = false,
             }
             match leser.read_tex_coords(0) {
@@ -281,8 +259,6 @@ fn mesh(quelle: &Path, ziel: &Path) -> Ergebnis<()> {
         if m.uvs.is_empty() { "nein" } else { "ja" },
         m.id
     );
-    println!(
-        "  Hinweis: glTF kennt nur Dreiecke – Vierecke aus Blender kommen als je zwei Dreiecke an."
-    );
+    println!("  Hinweis: glTF kennt nur Dreiecke – Vierecke aus Blender kommen als je zwei Dreiecke an.");
     Ok(())
 }

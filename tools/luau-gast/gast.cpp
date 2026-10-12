@@ -42,6 +42,8 @@ IMPORT("key_down") int32_t h_key_down(const char* p, int32_t n);
 IMPORT("key_pressed") int32_t h_key_pressed(const char* p, int32_t n);
 IMPORT("mouse_position") void h_mouse_position(float* aus);
 IMPORT("set_camera") void h_set_camera(float x, float y, float zoom);
+IMPORT("set_parent") void h_set_parent(int64_t id, int64_t eltern);
+IMPORT("get_parent") int64_t h_get_parent(int64_t id);
 }
 
 static void log_str(const std::string& s) { h_log(s.data(), (int32_t)s.size()); }
@@ -126,13 +128,22 @@ static int l_set_camera(lua_State* L) {
     h_set_camera((float)luaL_checknumber(L, 1), (float)luaL_checknumber(L, 2), (float)luaL_optnumber(L, 3, 1)); return 0;
 }
 
+static int l_set_parent(lua_State* L) {
+    h_set_parent(id_arg(L, 1), lua_isnoneornil(L, 2) ? 0 : id_arg(L, 2)); return 0;
+}
+static int l_get_parent(lua_State* L) {
+    int64_t e = h_get_parent(id_arg(L, 1));
+    if (e == 0) lua_pushnil(L); else lua_pushnumber(L, (double)e);
+    return 1;
+}
+
 static const luaL_Reg timbre_funktionen[] = {
     {"log", l_log}, {"time", l_time}, {"spawn", l_spawn}, {"find", l_find}, {"destroy", l_destroy},
     {"set_position", l_set_position}, {"get_position", l_get_position},
     {"set_rotation", l_set_rotation}, {"get_rotation", l_get_rotation}, {"set_scale", l_set_scale},
     {"set_velocity", l_set_velocity}, {"set_sprite", l_set_sprite}, {"set_color", l_set_color},
     {"key_down", l_key_down}, {"key_pressed", l_key_pressed}, {"mouse_position", l_mouse_position},
-    {"set_camera", l_set_camera}, {NULL, NULL},
+    {"set_camera", l_set_camera}, {"set_parent", l_set_parent}, {"get_parent", l_get_parent}, {NULL, NULL},
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +151,7 @@ static const luaL_Reg timbre_funktionen[] = {
 // ---------------------------------------------------------------------------
 struct Script {
     std::string name;
+    int64_t id;   // Objekt-ID des Script-Objekts (0 = keins)
     int umgebung; // Referenz auf die eigene Umgebung (Tabelle) des Scripts
     bool aktiv;   // nach einem Fehler in on_update wird das Script angehalten
 };
@@ -181,8 +193,10 @@ EXPORT("timbre_alloc") void* timbre_alloc(int32_t n) { return malloc(n > 0 ? n :
 EXPORT("timbre_free") void timbre_free(void* p) { free(p); }
 
 // Script übersetzen und ausführen (der Code außerhalb von Funktionen läuft sofort).
+// script_id = Objekt des Scripts, eltern_id = Objekt, unter dem es hängt (0 = keins).
 // 0 = ok, 1 = Syntaxfehler, 2 = Laufzeitfehler
-EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, const char* quelle, int32_t quelle_n) {
+EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, const char* quelle, int32_t quelle_n,
+                                            int64_t script_id, int64_t eltern_id) {
     vm_starten();
     std::string chunk = "=" + std::string(name, name_n);
 
@@ -197,6 +211,14 @@ EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, co
     lua_setmetatable(L, -2);
     int umgebung_index = lua_gettop(L);
 
+    // `script` – wie in Roblox: script.name, script.id, script.parent
+    lua_newtable(L);
+    lua_pushlstring(L, name, name_n);
+    lua_setfield(L, -2, "name");
+    if (script_id != 0) { lua_pushnumber(L, (double)script_id); lua_setfield(L, -2, "id"); }
+    if (eltern_id != 0) { lua_pushnumber(L, (double)eltern_id); lua_setfield(L, -2, "parent"); }
+    lua_setfield(L, umgebung_index, "script");
+
     int r = luau_load(L, chunk.c_str(), bc, bc_n, umgebung_index);
     free(bc);
     if (r != 0) {
@@ -209,7 +231,7 @@ EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, co
         lua_pop(L, 2);
         return 2;
     }
-    scripts.push_back(Script{std::string(name, name_n), lua_ref(L, -1), true});
+    scripts.push_back(Script{std::string(name, name_n), script_id, lua_ref(L, -1), true});
     lua_pop(L, 1);
     return 0;
 }
@@ -228,6 +250,12 @@ EXPORT("timbre_update") void timbre_update(float dt) {
             fehler_str(s.name + " wurde angehalten.");
         }
     }
+}
+
+// Script anhalten (z. B. weil sein Objekt gelöscht wurde).
+EXPORT("timbre_script_stoppen") void timbre_script_stoppen(int64_t script_id) {
+    for (auto& s : scripts)
+        if (s.id == script_id) s.aktiv = false;
 }
 
 } // extern "C"

@@ -17,7 +17,10 @@ use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store, 
 use crate::input::{taste_aus_name, Input};
 use crate::kamera::Kamera2d;
 use crate::renderer::TexturId;
-use crate::welt::{objekt_aus_nummer, objekt_nummer, Bewegung, Bild, Name, Transform, Welt};
+use crate::welt::{
+    eltern_setzen, entfernen, objekt_aus_nummer, objekt_nummer, welt_transform, welt_transform_setzen, Bewegung, Bild,
+    Eltern, Name, Objekt, Transform, Welt,
+};
 
 /// Wie viele WebAssembly-Anweisungen ein Aufruf höchstens ausführen darf.
 const TREIBSTOFF_LADEN: u64 = 2_000_000_000;
@@ -86,6 +89,10 @@ impl ScriptMotor {
             laden: instanz
                 .get_typed_func(&mut store, "timbre_laden")
                 .map_err(|_| f("timbre_laden"))?,
+            stoppen: instanz
+                .get_typed_func(&mut store, "timbre_script_stoppen")
+                .map_err(|_| f("timbre_script_stoppen"))?,
+            geladen: Vec::new(),
             start: instanz
                 .get_typed_func(&mut store, "timbre_start")
                 .map_err(|_| f("timbre_start"))?,
@@ -109,7 +116,10 @@ pub struct ScriptLaufzeit {
     speicher: Memory,
     alloc: TypedFunc<i32, i32>,
     free: TypedFunc<i32, ()>,
-    laden: TypedFunc<(i32, i32, i32, i32), i32>,
+    laden: TypedFunc<(i32, i32, i32, i32, i64, i64), i32>,
+    stoppen: TypedFunc<i64, ()>,
+    /// Script-Objekte, deren Script läuft – verschwindet eins, wird sein Script angehalten.
+    geladen: Vec<Objekt>,
     start: TypedFunc<(), ()>,
     update: TypedFunc<f32, ()>,
     /// Nach einem schweren Fehler (z. B. Endlosschleife) ist der Gast unbrauchbar.
@@ -137,8 +147,7 @@ impl ScriptLaufzeit {
             Err(e) => {
                 let text = match e.downcast_ref::<Trap>() {
                     Some(Trap::OutOfFuel) => {
-                        "Script hat zu lange gebraucht und wurde abgebrochen – Endlosschleife?"
-                            .to_string()
+                        "Script hat zu lange gebraucht und wurde abgebrochen – Endlosschleife?".to_string()
                     }
                     _ => format!("Script-Laufzeit abgestürzt: {e}"),
                 };
@@ -151,35 +160,66 @@ impl ScriptLaufzeit {
 
     fn text_ablegen(&mut self, text: &str) -> wasmtime::Result<i32> {
         let p = self.alloc.call(&mut self.store, text.len() as i32)?;
-        self.speicher
-            .write(&mut self.store, p as usize, text.as_bytes())?;
+        self.speicher.write(&mut self.store, p as usize, text.as_bytes())?;
         Ok(p)
     }
 
     /// Ein Script laden und seinen Hauptteil ausführen. `false` bei Fehler (steht dann in den Meldungen).
-    pub fn script_laden(&mut self, welt: &mut Welt, name: &str, quelle: &str) -> bool {
-        self.mit_welt(welt, TREIBSTOFF_LADEN, |s| {
-            let n = s.text_ablegen(name)?;
-            let q = s.text_ablegen(quelle)?;
-            let r = s
-                .laden
-                .call(&mut s.store, (n, name.len() as i32, q, quelle.len() as i32))?;
-            s.free.call(&mut s.store, n)?;
-            s.free.call(&mut s.store, q)?;
-            Ok(r == 0)
-        })
-        .unwrap_or(false)
+    ///
+    /// `script` = das Script-Objekt (für `script.id`), `eltern` = Objekt, unter dem es hängt
+    /// (für `script.parent`). Beides darf fehlen.
+    pub fn script_laden(
+        &mut self,
+        welt: &mut Welt,
+        name: &str,
+        quelle: &str,
+        script: Option<Objekt>,
+        eltern: Option<Objekt>,
+    ) -> bool {
+        let id = script.map(|o| objekt_nummer(o) as i64).unwrap_or(0);
+        let eltern_id = eltern.map(|o| objekt_nummer(o) as i64).unwrap_or(0);
+        let ok = self
+            .mit_welt(welt, TREIBSTOFF_LADEN, |s| {
+                let n = s.text_ablegen(name)?;
+                let q = s.text_ablegen(quelle)?;
+                let r = s.laden.call(
+                    &mut s.store,
+                    (n, name.len() as i32, q, quelle.len() as i32, id, eltern_id),
+                )?;
+                s.free.call(&mut s.store, n)?;
+                s.free.call(&mut s.store, q)?;
+                Ok(r == 0)
+            })
+            .unwrap_or(false);
+        if ok {
+            self.geladen.extend(script);
+        }
+        ok
+    }
+
+    /// Scripts anhalten, deren Objekt nicht mehr existiert (z. B. mit dem Eltern-Objekt gelöscht).
+    fn verwaiste_anhalten(&mut self, welt: &Welt) {
+        let weg: Vec<Objekt> = self.geladen.iter().copied().filter(|o| !welt.contains(*o)).collect();
+        if weg.is_empty() || self.abgestuerzt {
+            return;
+        }
+        self.geladen.retain(|o| welt.contains(*o));
+        for o in weg {
+            let _ = self.stoppen.call(&mut self.store, objekt_nummer(o) as i64);
+        }
     }
 
     /// `on_start()` aller Scripts.
     pub fn start(&mut self, welt: &mut Welt) {
         self.mit_welt(welt, TREIBSTOFF_LADEN, |s| s.start.call(&mut s.store, ()));
+        self.verwaiste_anhalten(welt);
     }
 
     /// Ein Logik-Schritt: `on_update(dt)` aller Scripts.
     pub fn update(&mut self, welt: &mut Welt, dt: f32) {
         self.store.data_mut().zeit += dt as f64;
         self.mit_welt(welt, TREIBSTOFF_UPDATE, |s| s.update.call(&mut s.store, dt));
+        self.verwaiste_anhalten(welt);
     }
 
     /// Zugriff auf Eingabe, Texturen, Kamera usw. – vor dem Aufruf setzen, danach auslesen.
@@ -219,6 +259,16 @@ fn floats_schreiben(c: &mut Caller<'_, Kontext>, p: i32, werte: &[f32]) -> wasmt
 
 fn objekt(id: i64) -> Option<crate::welt::Objekt> {
     objekt_aus_nummer(id as u64)
+}
+
+/// Lage eines Objekts in der Welt ändern (wird in die Lage relativ zum Eltern-Objekt umgerechnet).
+fn welt_aendern(c: &mut Caller<'_, Kontext>, id: i64, f: impl FnOnce(&mut Transform)) {
+    let Some(o) = objekt(id) else { return };
+    let welt = &mut c.data_mut().welt;
+    if let Some(mut t) = welt_transform(welt, o) {
+        f(&mut t);
+        welt_transform_setzen(welt, o, t);
+    }
 }
 
 /// Komponente eines Objekts ändern (fehlende Objekte werden still ignoriert).
@@ -277,55 +327,43 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
     )?;
     l.func_wrap(M, "destroy", |mut c: Caller<'_, Kontext>, id: i64| {
         if let Some(o) = objekt(id) {
-            let _ = c.data_mut().welt.despawn(o);
+            entfernen(&mut c.data_mut().welt, o);
         }
     })?;
 
+    // Position und Drehung: immer in der Welt (wie `Position` in Roblox), auch bei Kindern.
     l.func_wrap(
         M,
         "set_position",
         |mut c: Caller<'_, Kontext>, id: i64, x: f32, y: f32| {
-            aendern::<Transform>(&mut c, id, |t| t.position = Vec2::new(x, y));
+            welt_aendern(&mut c, id, |t| t.position = Vec2::new(x, y));
         },
     )?;
     l.func_wrap(
         M,
         "get_position",
         |mut c: Caller<'_, Kontext>, id: i64, aus: i32| -> wasmtime::Result<i32> {
-            let pos = objekt(id)
-                .and_then(|o| c.data().welt.get::<&Transform>(o).ok().map(|t| t.position));
-            match pos {
-                Some(p) => {
-                    floats_schreiben(&mut c, aus, &[p.x, p.y])?;
+            match objekt(id).and_then(|o| welt_transform(&c.data().welt, o)) {
+                Some(t) => {
+                    floats_schreiben(&mut c, aus, &[t.position.x, t.position.y])?;
                     Ok(1)
                 }
                 None => Ok(0),
             }
         },
     )?;
-    l.func_wrap(
-        M,
-        "set_rotation",
-        |mut c: Caller<'_, Kontext>, id: i64, r: f32| {
-            aendern::<Transform>(&mut c, id, |t| t.drehung = r);
-        },
-    )?;
-    l.func_wrap(
-        M,
-        "get_rotation",
-        |c: Caller<'_, Kontext>, id: i64| -> f32 {
-            objekt(id)
-                .and_then(|o| c.data().welt.get::<&Transform>(o).ok().map(|t| t.drehung))
-                .unwrap_or(0.0)
-        },
-    )?;
-    l.func_wrap(
-        M,
-        "set_scale",
-        |mut c: Caller<'_, Kontext>, id: i64, x: f32, y: f32| {
-            aendern::<Transform>(&mut c, id, |t| t.skala = Vec2::new(x, y));
-        },
-    )?;
+    l.func_wrap(M, "set_rotation", |mut c: Caller<'_, Kontext>, id: i64, r: f32| {
+        welt_aendern(&mut c, id, |t| t.drehung = r);
+    })?;
+    l.func_wrap(M, "get_rotation", |c: Caller<'_, Kontext>, id: i64| -> f32 {
+        objekt(id)
+            .and_then(|o| welt_transform(&c.data().welt, o))
+            .map(|t| t.drehung)
+            .unwrap_or(0.0)
+    })?;
+    l.func_wrap(M, "set_scale", |mut c: Caller<'_, Kontext>, id: i64, x: f32, y: f32| {
+        aendern::<Transform>(&mut c, id, |t| t.skala = Vec2::new(x, y));
+    })?;
     l.func_wrap(
         M,
         "set_velocity",
@@ -344,25 +382,13 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
     l.func_wrap(
         M,
         "set_sprite",
-        |mut c: Caller<'_, Kontext>,
-         id: i64,
-         p: i32,
-         n: i32,
-         b: f32,
-         h: f32,
-         ebene: i32|
-         -> wasmtime::Result<i32> {
+        |mut c: Caller<'_, Kontext>, id: i64, p: i32, n: i32, b: f32, h: f32, ebene: i32| -> wasmtime::Result<i32> {
             let name = text(&mut c, p, n)?;
             let Some(&textur) = c.data().texturen.get(&name) else {
                 return Ok(0);
             };
             if let Some(o) = objekt(id) {
-                let farbe = c
-                    .data()
-                    .welt
-                    .get::<&Bild>(o)
-                    .map(|b| b.farbe)
-                    .unwrap_or([1.0; 4]);
+                let farbe = c.data().welt.get::<&Bild>(o).map(|b| b.farbe).unwrap_or([1.0; 4]);
                 let mut bild = Bild::new(textur, Vec2::new(b, h));
                 bild.ebene = ebene;
                 bild.farbe = farbe;
@@ -414,28 +440,31 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
         },
     )?;
 
+    l.func_wrap(M, "set_parent", |mut c: Caller<'_, Kontext>, id: i64, eltern: i64| {
+        if let Some(o) = objekt(id) {
+            // Lage in der Welt bleibt gleich; Schleifen im Baum werden ignoriert
+            eltern_setzen(&mut c.data_mut().welt, o, objekt(eltern));
+        }
+    })?;
+    l.func_wrap(M, "get_parent", |c: Caller<'_, Kontext>, id: i64| -> i64 {
+        objekt(id)
+            .and_then(|o| c.data().welt.get::<&Eltern>(o).ok().map(|e| e.0))
+            .map(|e| objekt_nummer(e) as i64)
+            .unwrap_or(0)
+    })?;
+
     // Die wenigen Systemfunktionen, die die C-Bibliothek im Gast erwartet.
     // Dateien gibt es für Scripts nicht – alles meldet "nicht erlaubt".
     const W: &str = "wasi_snapshot_preview1";
     const NICHT_ERLAUBT: i32 = 63; // EPERM
     l.func_wrap(W, "fd_close", |_: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_fdstat_get", |_: i32, _: i32| -> i32 {
-        NICHT_ERLAUBT
-    })?;
-    l.func_wrap(W, "fd_seek", |_: i32, _: i64, _: i32, _: i32| -> i32 {
-        NICHT_ERLAUBT
-    })?;
-    l.func_wrap(W, "fd_write", |_: i32, _: i32, _: i32, _: i32| -> i32 {
-        NICHT_ERLAUBT
-    })?;
+    l.func_wrap(W, "fd_fdstat_get", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "fd_seek", |_: i32, _: i64, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "fd_write", |_: i32, _: i32, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
     l.func_wrap(
         W,
         "clock_time_get",
-        |mut c: Caller<'_, Kontext>,
-         _id: i32,
-         _genauigkeit: i64,
-         aus: i32|
-         -> wasmtime::Result<i32> {
+        |mut c: Caller<'_, Kontext>, _id: i32, _genauigkeit: i64, aus: i32| -> wasmtime::Result<i32> {
             let nanos = (c.data().zeit * 1e9) as u64;
             speicher(&mut c)?.write(&mut c, aus as usize, &nanos.to_le_bytes())?;
             Ok(0)
@@ -473,15 +502,12 @@ mod tests {
                 timbre.set_position(kiste, x + 10 * dt, y)
             end
         "#;
-        assert!(l.script_laden(&mut welt, "test.luau", quelle));
+        assert!(l.script_laden(&mut welt, "test.luau", quelle, None, None));
         l.start(&mut welt);
         for _ in 0..60 {
             l.update(&mut welt, 1.0 / 60.0);
         }
-        assert_eq!(
-            meldungen(&mut l),
-            vec![Meldung::Info("erzeugt true".into())]
-        );
+        assert_eq!(meldungen(&mut l), vec![Meldung::Info("erzeugt true".into())]);
         let mut q = welt.query::<(&Name, &Transform)>();
         let (name, t) = q.iter().next().unwrap();
         assert_eq!(name.0, "Kiste");
@@ -491,29 +517,30 @@ mod tests {
     #[test]
     fn fehler_werden_gemeldet_und_halten_nur_das_script_an() {
         let (mut l, mut welt) = laufzeit();
-        assert!(!l.script_laden(&mut welt, "kaputt.luau", "das ist ((kein luau"));
+        assert!(!l.script_laden(&mut welt, "kaputt.luau", "das ist ((kein luau", None, None));
         assert!(l.script_laden(
             &mut welt,
             "fehler.luau",
-            "function on_update() local t = nil; print(t.x) end"
+            "function on_update() local t = nil; print(t.x) end",
+            None,
+            None
         ));
         assert!(l.script_laden(
             &mut welt,
             "gut.luau",
-            "function on_update() print('gut') end"
+            "function on_update() print('gut') end",
+            None,
+            None
         ));
         l.update(&mut welt, 0.016);
         l.update(&mut welt, 0.016);
         let m = meldungen(&mut l);
         assert!(matches!(&m[0], Meldung::Fehler(t) if t.starts_with("kaputt.luau:1")));
-        assert!(m.iter().any(|x| matches!(x, Meldung::Fehler(t) if t.contains("fehler.luau:1") && t.contains("index nil"))));
+        assert!(m
+            .iter()
+            .any(|x| matches!(x, Meldung::Fehler(t) if t.contains("fehler.luau:1") && t.contains("index nil"))));
         // "gut" läuft in beiden Schritten weiter, "fehler" nur einmal gemeldet
-        assert_eq!(
-            m.iter()
-                .filter(|x| **x == Meldung::Info("gut".into()))
-                .count(),
-            2
-        );
+        assert_eq!(m.iter().filter(|x| **x == Meldung::Info("gut".into())).count(), 2);
         assert!(!l.abgestuerzt());
     }
 
@@ -523,7 +550,9 @@ mod tests {
         assert!(l.script_laden(
             &mut welt,
             "schleife.luau",
-            "function on_update() while true do end end"
+            "function on_update() while true do end end",
+            None,
+            None
         ));
         l.update(&mut welt, 0.016);
         assert!(l.abgestuerzt());
@@ -533,10 +562,59 @@ mod tests {
     }
 
     #[test]
+    fn script_kennt_eltern_und_endet_mit_ihm() {
+        use crate::welt::{Eltern, Script};
+        let (mut l, mut welt) = laufzeit();
+        let kiste = welt.spawn((Name("Kiste".into()), Transform::default()));
+        let s = welt.spawn((
+            Name("Steuerung".into()),
+            Eltern(kiste),
+            Script {
+                datei: "s.luau".into(),
+                aktiv: true,
+            },
+        ));
+        let quelle = r#"
+            print(script.name, timbre.find("Kiste") == script.parent)
+            function on_update() print("lebt") end
+        "#;
+        assert!(l.script_laden(&mut welt, "s.luau", quelle, Some(s), Some(kiste)));
+        l.update(&mut welt, 0.016);
+        entfernen(&mut welt, kiste); // Script-Objekt geht mit
+        l.update(&mut welt, 0.016); // erkennt: Script-Objekt weg → anhalten
+        l.update(&mut welt, 0.016);
+        let m = meldungen(&mut l);
+        assert_eq!(m[0], Meldung::Info("s.luau true".into()));
+        assert_eq!(m.iter().filter(|x| **x == Meldung::Info("lebt".into())).count(), 2);
+    }
+
+    #[test]
+    fn positionen_von_kindern_sind_weltkoordinaten() {
+        let (mut l, mut welt) = laufzeit();
+        let quelle = r#"
+            local e = timbre.spawn("Eltern")
+            timbre.set_position(e, 100, 0)
+            local k = timbre.spawn("Kind")
+            timbre.set_position(k, 110, 0)
+            timbre.set_parent(k, e)      -- springt nicht
+            local x, y = timbre.get_position(k)
+            print(x, y)
+            timbre.set_position(e, 200, 50) -- Kind geht mit
+            x, y = timbre.get_position(k)
+            print(x, y)
+        "#;
+        assert!(l.script_laden(&mut welt, "t.luau", quelle, None, None));
+        assert_eq!(
+            meldungen(&mut l),
+            vec![Meldung::Info("110 0".into()), Meldung::Info("210 50".into())]
+        );
+    }
+
+    #[test]
     fn scripts_sind_voneinander_getrennt() {
         let (mut l, mut welt) = laufzeit();
-        assert!(l.script_laden(&mut welt, "a.luau", "zaehler = 1"));
-        assert!(l.script_laden(&mut welt, "b.luau", "print(zaehler)"));
+        assert!(l.script_laden(&mut welt, "a.luau", "zaehler = 1", None, None));
+        assert!(l.script_laden(&mut welt, "b.luau", "print(zaehler)", None, None));
         assert_eq!(meldungen(&mut l), vec![Meldung::Info("nil".into())]);
     }
 }

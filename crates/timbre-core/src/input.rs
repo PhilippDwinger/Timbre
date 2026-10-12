@@ -114,8 +114,8 @@ pub fn taste_aus_name(name: &str) -> Option<KeyCode> {
     if n.len() == 1 {
         let c = n.chars().next()?;
         const BUCHSTABEN: [KeyCode; 26] = [
-            KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN,
-            KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+            KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR,
+            KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
         ];
         const ZIFFERN: [KeyCode; 10] = [
             Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,

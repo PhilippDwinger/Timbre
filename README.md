@@ -15,6 +15,12 @@ Der allererste Build dauert einige Minuten (Grafik, Scripting und Oberfläche we
 | **▶ Ausführen** / **F5** | Scripts starten |
 | **■ Stopp** / **F5** | Anhalten, Szene zurücksetzen |
 | **💾 Speichern** / **Strg+S** | Scripts und Szene speichern |
+| **↶ / ↷** / **Strg+Z**, **Strg+Y** | Rückgängig / Wiederholen (im Script-Editor: Text-Rückgängig) |
+| **Strg+D** | Ausgewähltes Objekt duplizieren (samt Kindern) |
+| Explorer: ziehen | Objekt unter ein anderes hängen (auf freie Fläche = oberste Ebene) |
+| Explorer: Doppelklick | Script öffnen / Kamera zum Objekt |
+| Explorer: Rechtsklick | Script hinzufügen, Duplizieren, Löschen |
+| Konsole: Fehler anklicken | Springt im Script zur Fehlerzeile |
 | Linke Maus (Szene) | Objekt auswählen und verschieben |
 | Rechte / mittlere Maus | Ansicht schieben |
 | Mausrad | Zoomen |

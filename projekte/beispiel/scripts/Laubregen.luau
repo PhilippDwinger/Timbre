@@ -1,4 +1,4 @@
--- Laub: lässt rund um den Spieler Blätter fallen.
+-- Laubregen: lässt rund um den Spieler Blätter fallen.
 -- Leertaste = Windstoß.
 
 local FARBEN = {
@@ -12,6 +12,10 @@ local MAX_BLAETTER = 400
 local blaetter = {}
 local warten = 0
 
+-- Ein Ordner im Explorer für alle Blätter (Objekt ohne Position = unsichtbar)
+local ordner = timbre.spawn("Laub")
+timbre.set_parent(ordner, script.id)
+
 local function neues_blatt(x, y)
 	local blatt = timbre.spawn("Laub")
 	local groesse = math.random(14, 30)
@@ -21,6 +25,7 @@ local function neues_blatt(x, y)
 	timbre.set_position(blatt, x, y)
 	timbre.set_rotation(blatt, math.random() * math.pi * 2)
 	timbre.set_velocity(blatt, math.random(-40, 40), -math.random(60, 140), (math.random() - 0.5) * 4)
+	timbre.set_parent(blatt, ordner)
 	table.insert(blaetter, blatt)
 end
 

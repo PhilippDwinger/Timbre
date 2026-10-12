@@ -18,10 +18,7 @@ impl<'a> Leser<'a> {
 
     pub fn bytes(&mut self, n: usize) -> Result<&'a [u8], TbrFehler> {
         let ende = self.pos.checked_add(n).ok_or(TbrFehler::Abgeschnitten)?;
-        let teil = self
-            .daten
-            .get(self.pos..ende)
-            .ok_or(TbrFehler::Abgeschnitten)?;
+        let teil = self.daten.get(self.pos..ende).ok_or(TbrFehler::Abgeschnitten)?;
         self.pos = ende;
         Ok(teil)
     }
@@ -45,8 +42,7 @@ impl<'a> Leser<'a> {
     /// Text mit vorangestellter Länge (u32).
     pub fn text(&mut self) -> Result<String, TbrFehler> {
         let n = self.u32()? as usize;
-        String::from_utf8(self.bytes(n)?.to_vec())
-            .map_err(|_| TbrFehler::Kaputt("Text ist kein gültiges UTF-8"))
+        String::from_utf8(self.bytes(n)?.to_vec()).map_err(|_| TbrFehler::Kaputt("Text ist kein gültiges UTF-8"))
     }
 
     /// Restliche Bytes.

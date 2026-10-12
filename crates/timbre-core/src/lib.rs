@@ -17,7 +17,7 @@ pub use kamera::Kamera2d;
 pub use renderer::{Bereich, Frame, FrameStatistik, Renderer, Sprite, TexturId};
 /// Das Asset-Format, damit Spiele nicht extra `timbre-tbr` einbinden müssen.
 pub use timbre_tbr as tbr;
-pub use welt::{Bewegung, Bild, Name, Objekt, Transform, Welt};
+pub use welt::{Bewegung, Bild, Eltern, Name, Objekt, Script, Transform, Welt};
 pub use zeit::FesterTakt;
 
 pub const NAME: &str = "Timbre";

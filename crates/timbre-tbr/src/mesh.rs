@@ -68,28 +68,20 @@ impl Mesh {
     pub fn pruefen(&self) -> Result<(), TbrFehler> {
         let n = self.positionen.len();
         if !self.normalen.is_empty() && self.normalen.len() != n {
-            return Err(TbrFehler::Kaputt(
-                "Anzahl Normalen passt nicht zu den Punkten",
-            ));
+            return Err(TbrFehler::Kaputt("Anzahl Normalen passt nicht zu den Punkten"));
         }
         if !self.uvs.is_empty() && self.uvs.len() != n {
-            return Err(TbrFehler::Kaputt(
-                "Anzahl Texturkoordinaten passt nicht zu den Punkten",
-            ));
+            return Err(TbrFehler::Kaputt("Anzahl Texturkoordinaten passt nicht zu den Punkten"));
         }
         if self.eckenzahl.iter().any(|&e| e < 3) {
             return Err(TbrFehler::Kaputt("Fläche mit weniger als 3 Ecken"));
         }
         let summe: u64 = self.eckenzahl.iter().map(|&e| e as u64).sum();
         if summe != self.indizes.len() as u64 {
-            return Err(TbrFehler::Kaputt(
-                "Flächen und Indizes passen nicht zusammen",
-            ));
+            return Err(TbrFehler::Kaputt("Flächen und Indizes passen nicht zusammen"));
         }
         if self.indizes.iter().any(|&i| i as usize >= n) {
-            return Err(TbrFehler::Kaputt(
-                "Index zeigt auf einen Punkt, den es nicht gibt",
-            ));
+            return Err(TbrFehler::Kaputt("Index zeigt auf einen Punkt, den es nicht gibt"));
         }
         Ok(())
     }
@@ -135,9 +127,7 @@ impl Mesh {
                 b"UVKO" => m.uvs = gruppen(&f32_liste(b.daten)?)?,
                 b"FLAE" => {
                     let zahlen: Vec<u32> = u32_liste(b.daten)?;
-                    let (&anzahl, rest) = zahlen
-                        .split_first()
-                        .ok_or(TbrFehler::Kaputt("FLAE ist leer"))?;
+                    let (&anzahl, rest) = zahlen.split_first().ok_or(TbrFehler::Kaputt("FLAE ist leer"))?;
                     let anzahl = anzahl as usize;
                     if rest.len() < anzahl {
                         return Err(TbrFehler::Kaputt("FLAE ist zu kurz"));
@@ -162,14 +152,9 @@ impl Mesh {
 
 fn gruppen<const N: usize>(werte: &[f32]) -> Result<Vec<[f32; N]>, TbrFehler> {
     if !werte.len().is_multiple_of(N) {
-        return Err(TbrFehler::Kaputt(
-            "Zahlenliste passt nicht zur Gruppengröße",
-        ));
+        return Err(TbrFehler::Kaputt("Zahlenliste passt nicht zur Gruppengröße"));
     }
-    Ok(werte
-        .chunks_exact(N)
-        .map(|c| c.try_into().unwrap())
-        .collect())
+    Ok(werte.chunks_exact(N).map(|c| c.try_into().unwrap()).collect())
 }
 
 fn u32_liste(daten: &[u8]) -> Result<Vec<u32>, TbrFehler> {

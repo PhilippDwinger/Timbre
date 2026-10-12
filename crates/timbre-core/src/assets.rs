@@ -17,11 +17,7 @@ pub struct Assets {
 
 impl Assets {
     /// Lädt eine Textur aus `.tbr`-Bytes. Ist sie schon geladen, wird nichts doppelt hochgeladen.
-    pub fn textur_laden(
-        &mut self,
-        renderer: &mut Renderer,
-        tbr: &[u8],
-    ) -> Result<TexturId, TbrFehler> {
+    pub fn textur_laden(&mut self, renderer: &mut Renderer, tbr: &[u8]) -> Result<TexturId, TbrFehler> {
         let textur = Textur::aus_bytes(tbr)?;
         if let Some(&id) = self.texturen.get(&textur.id) {
             return Ok(id);
@@ -45,10 +41,7 @@ impl Assets {
 
     /// Name einer geladenen Textur.
     pub fn name_von(&self, textur: TexturId) -> Option<&str> {
-        self.namen
-            .iter()
-            .find(|(_, &t)| t == textur)
-            .map(|(n, _)| n.as_str())
+        self.namen.iter().find(|(_, &t)| t == textur).map(|(n, _)| n.as_str())
     }
 
     /// Geladene Textur → Asset-ID (zum Speichern von Szenen).

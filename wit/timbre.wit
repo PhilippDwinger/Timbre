@@ -1,10 +1,10 @@
-// Timbre Script-Schnittstelle – v0.2 (Meilenstein 5)
+// Timbre Script-Schnittstelle – v0.3 (Meilenstein 5: Scripts als Objekte)
 //
 // Beschreibung der Funktionen, die Scripts in jeder Sprache bekommen.
 // Technisch sind die Gäste derzeit einfache WebAssembly-Core-Module mit schmaler
 // C-Schnittstelle (siehe docs/scripting-abi.md) – diese Datei ist die sprachneutrale
 // Beschreibung derselben Funktionen.
-package timbre:engine@0.2.0;
+package timbre:engine@0.3.0;
 
 interface host {
     /// Ausgabe in die Konsole.
@@ -15,7 +15,11 @@ interface host {
     /// Objekte (IDs sind 64-Bit-Zahlen).
     spawn: func(name: string) -> u64;
     find: func(name: string) -> option<u64>;
+    /// Löscht auch alle Kinder.
     destroy: func(entity: u64);
+    /// Baum im Explorer: none = oberste Ebene.
+    set-parent: func(entity: u64, parent: option<u64>);
+    get-parent: func(entity: u64) -> option<u64>;
 
     set-position: func(entity: u64, x: f32, y: f32);
     get-position: func(entity: u64) -> option<tuple<f32, f32>>;
@@ -39,6 +43,9 @@ interface host {
 /// Ein Script: bekommt Engine-Funktionen, liefert Lebenszyklus-Callbacks.
 world script {
     import host;
+
+    /// Jedes Script kennt sein eigenes Objekt und dessen Eltern (in Luau: script.id, script.parent).
+    /// Der Host übergibt beides beim Laden.
 
     /// Einmal nach dem Laden aller Scripts (▶).
     export on-start: func();

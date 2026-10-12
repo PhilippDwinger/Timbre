@@ -26,11 +26,7 @@ impl Oberflaeche {
             renderer.format_linear(),
             egui_wgpu::RendererOptions::default(),
         );
-        Self {
-            ctx,
-            zustand,
-            renderer,
-        }
+        Self { ctx, zustand, renderer }
     }
 
     /// Fenster-Ereignis an egui geben. `true` = egui hat es verbraucht.
@@ -39,11 +35,7 @@ impl Oberflaeche {
     }
 
     /// Oberfläche für diesen Frame aufbauen.
-    pub fn ausfuehren(
-        &mut self,
-        window: &Window,
-        ui: impl FnMut(&mut egui::Ui),
-    ) -> egui::FullOutput {
+    pub fn ausfuehren(&mut self, window: &Window, ui: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
         let eingabe = self.zustand.take_egui_input(window);
         let mut ausgabe = self.ctx.run_ui(eingabe, ui);
         self.zustand
@@ -67,13 +59,7 @@ impl Oberflaeche {
     }
 
     /// Oberfläche über die Szene zeichnen.
-    pub fn zeichnen(
-        &mut self,
-        renderer: &Renderer,
-        frame: &mut Frame,
-        ausgabe: egui::FullOutput,
-        pixel: [u32; 2],
-    ) {
+    pub fn zeichnen(&mut self, renderer: &Renderer, frame: &mut Frame, ausgabe: egui::FullOutput, pixel: [u32; 2]) {
         let ppp = ausgabe.pixels_per_point;
         let formen = self.ctx.tessellate(ausgabe.shapes, ppp);
         let bildschirm = egui_wgpu::ScreenDescriptor {

@@ -110,7 +110,7 @@ impl App {
                 let (kamera, sprites) = studio.sprites_bauen(takt.alpha());
                 statistik = renderer.sprites_zeichnen(&mut frame, &kamera, sprites, bereich);
             }
-            studio.statistik_setzen(statistik, schritte);
+            studio.statistik_setzen(statistik);
             let size = window.inner_size();
             ober.zeichnen(renderer, &mut frame, ausgabe, [size.width, size.height]);
             renderer.frame_beenden(frame);
@@ -206,9 +206,7 @@ fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut app = App::new();
-        event_loop
-            .run_app(&mut app)
-            .expect("Event-Loop abgebrochen");
+        event_loop.run_app(&mut app).expect("Event-Loop abgebrochen");
     }
 
     #[cfg(target_arch = "wasm32")]
