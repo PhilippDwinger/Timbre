@@ -2,7 +2,7 @@
 **/*.rs.bk
 *.wasm
 /pkg
-/dist
+dist/
 .vscode/settings.json
 .DS_Store
 Thumbs.db

@@ -46,5 +46,6 @@ Repo: https://github.com/PhilippDwinger/Timbre
 
 ## Status
 - Grundgerüst angelegt: Workspace, `timbre-core` (Bibliothek), `timbre-app` (Starter), WIT-Entwurf. Läuft bei Paddy.
-- Meilenstein 1a (nativ) gebaut, wartet auf Validierung: winit 0.30 + wgpu 30. `timbre-core/src/renderer.rs` kennt kein Fenster-Crate (bekommt nur ein `SurfaceTarget`), damit er später auch im Browser läuft. Dreieck kommt ohne Vertex-Buffer direkt aus `shaders/dreieck.wgsl`.
+- Meilenstein 1a (nativ) ✅ von Paddy validiert (Dreieck sichtbar, committet): winit 0.30 + wgpu 30. `timbre-core/src/renderer.rs` kennt kein Fenster-Crate (bekommt nur ein `SurfaceTarget`), damit er später auch im Browser läuft. Dreieck kommt ohne Vertex-Buffer direkt aus `shaders/dreieck.wgsl`.
   - wgpu-30-Eigenheiten: `InstanceDescriptor::new_without_display_handle()`, `get_current_texture()` liefert `CurrentSurfaceTexture` (kein Result), Präsentieren über `queue.present(frame)`.
+- Meilenstein 1b (Browser) gebaut, wartet auf Validierung: Web-Build mit **Trunk** aus `crates/timbre-app` (`index.html` dort). Im Browser wird der Renderer asynchron gebaut (`spawn_local`) und kommt per `TimbreEvent::RendererBereit` über den `EventLoopProxy` zurück; Event-Loop dort über `spawn_app`. Logs/Panics in die Browser-Konsole. Braucht einen WebGPU-fähigen Browser (Chrome/Edge).

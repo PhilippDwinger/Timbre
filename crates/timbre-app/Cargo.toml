@@ -7,6 +7,15 @@ authors.workspace = true
 [dependencies]
 timbre-core = { path = "../timbre-core" }
 winit = "0.30"
+log = "0.4"
+
+# Nur nativ (Windows)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4"
 env_logger = "0.11"
-log = "0.4"
+
+# Nur im Browser
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+console_log = "1"
+console_error_panic_hook = "0.1"
