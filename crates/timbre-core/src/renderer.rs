@@ -74,6 +74,30 @@ struct SpriteInstanz {
     uv: [f32; 4],
 }
 
+/// Rechteck auf der Zeichenfläche in Pixeln (links oben = 0,0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bereich {
+    pub x: f32,
+    pub y: f32,
+    pub breite: f32,
+    pub hoehe: f32,
+}
+
+impl Bereich {
+    pub fn groesse(&self) -> Vec2 {
+        Vec2::new(self.breite, self.hoehe)
+    }
+}
+
+/// Ein Frame in Arbeit: zuerst Sprites, danach z. B. die Editor-Oberfläche, dann anzeigen.
+pub struct Frame {
+    textur: wgpu::SurfaceTexture,
+    pub view: wgpu::TextureView,
+    /// Dieselbe Fläche ohne sRGB-Umrechnung (für Oberflächen wie egui).
+    pub view_linear: wgpu::TextureView,
+    pub encoder: wgpu::CommandEncoder,
+}
+
 /// Zahlen zum letzten Frame (für die Anzeige).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameStatistik {
@@ -138,6 +162,8 @@ impl Renderer {
         if let Some(srgb) = caps.formats.iter().copied().find(|f| f.is_srgb()) {
             config.format = srgb;
         }
+        // Zusätzlich eine Ansicht ohne sRGB erlauben – die braucht die Editor-Oberfläche (egui).
+        config.view_formats = vec![config.format.remove_srgb_suffix()];
         surface.configure(&device, &config);
 
         // --- Kamera (Gruppe 0) ---
@@ -329,6 +355,24 @@ impl Renderer {
         self.textur_laden(textur.breite, textur.hoehe, &textur.pixel)
     }
 
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Pixelformat der Zeichenfläche.
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    /// Pixelformat von [`Frame::view_linear`] (für die Editor-Oberfläche).
+    pub fn format_linear(&self) -> wgpu::TextureFormat {
+        self.config.format.remove_srgb_suffix()
+    }
+
     /// Aktuelle Zeichenfläche in Pixeln.
     pub fn groesse(&self) -> Vec2 {
         Vec2::new(self.config.width as f32, self.config.height as f32)
@@ -344,9 +388,31 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Einen Frame zeichnen: alle Sprites aus Sicht der Kamera.
+    /// Einen Frame komplett zeichnen: Sprites auf der ganzen Fläche, dann anzeigen.
     pub fn zeichnen(&mut self, kamera: &Kamera2d, sprites: &[Sprite]) -> FrameStatistik {
-        let frame = match self.surface.get_current_texture() {
+        let Some(mut frame) = self.frame_beginnen() else {
+            return FrameStatistik::default();
+        };
+        let g = self.groesse();
+        let stat = self.sprites_zeichnen(
+            &mut frame,
+            kamera,
+            sprites,
+            Bereich {
+                x: 0.0,
+                y: 0.0,
+                breite: g.x,
+                hoehe: g.y,
+            },
+        );
+        self.frame_beenden(frame);
+        stat
+    }
+
+    /// Neuen Frame anfangen und mit der Hintergrundfarbe füllen.
+    /// `None`, wenn gerade nicht gezeichnet werden kann (Fenster verdeckt o. Ä.).
+    pub fn frame_beginnen(&mut self) -> Option<Frame> {
+        let textur = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
                 self.surface.configure(&self.device, &self.config);
@@ -355,18 +421,74 @@ impl Renderer {
             _ => {
                 // Fenster verdeckt, Timeout oder Surface veraltet: Frame auslassen.
                 self.surface.configure(&self.device, &self.config);
-                return FrameStatistik::default();
+                return None;
             }
         };
+        let view = textur
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame"),
+            });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Hintergrund"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(HINTERGRUND),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        let view_linear = textur.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.format_linear()),
+            ..Default::default()
+        });
+        Some(Frame {
+            textur,
+            view,
+            view_linear,
+            encoder,
+        })
+    }
+
+    /// Frame an den Bildschirm geben.
+    pub fn frame_beenden(&mut self, frame: Frame) {
+        self.queue.submit([frame.encoder.finish()]);
+        self.queue.present(frame.textur);
+    }
+
+    /// Sprites aus Sicht der Kamera in einen Bereich des Frames zeichnen.
+    /// Nur einmal pro Frame aufrufen (der Sprite-Puffer wird dabei neu befüllt).
+    pub fn sprites_zeichnen(
+        &mut self,
+        frame: &mut Frame,
+        kamera: &Kamera2d,
+        sprites: &[Sprite],
+        bereich: Bereich,
+    ) -> FrameStatistik {
+        // Bereich auf die Zeichenfläche begrenzen (sonst meckert wgpu).
+        let flaeche = self.groesse();
+        let x = bereich.x.clamp(0.0, flaeche.x);
+        let y = bereich.y.clamp(0.0, flaeche.y);
+        let b = bereich.breite.min(flaeche.x - x);
+        let h = bereich.hoehe.min(flaeche.y - y);
+        if b < 1.0 || h < 1.0 {
+            return FrameStatistik::default();
+        }
 
         // 1. Kamera-Matrix hochladen
-        let matrix = kamera.matrix(self.groesse());
+        let matrix = kamera.matrix(Vec2::new(b, h));
         self.queue.write_buffer(
             &self.kamera_puffer,
             0,
             bytemuck::cast_slice(&matrix.to_cols_array()),
         );
-
         // 2. Sprites nach (Ebene, Textur) sortieren: Ebenen bestimmen, was oben liegt,
         //    und innerhalb einer Ebene liegen gleiche Texturen hintereinander → wenige Draw Calls.
         //    Stabil sortieren, damit die Reihenfolge innerhalb einer Gruppe erhalten bleibt.
@@ -405,29 +527,25 @@ impl Renderer {
         }
 
         // 4. Zeichnen: ein Draw Call pro zusammenhängender Gruppe (gleiche Ebene + Textur).
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Frame"),
-            });
         let mut draw_calls = 0;
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Hauptpass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(HINTERGRUND),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
+            let mut pass = frame
+                .encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Hauptpass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &frame.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            pass.set_viewport(x, y, b, h, 0.0, 1.0);
+            pass.set_scissor_rect(x as u32, y as u32, b as u32, h as u32);
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.kamera_gruppe, &[]);
             pass.set_vertex_buffer(0, self.instanz_puffer.slice(..));
@@ -445,9 +563,6 @@ impl Renderer {
                 start = ende;
             }
         }
-        self.queue.submit([encoder.finish()]);
-        self.queue.present(frame);
-
         FrameStatistik {
             sprites: sprites.len(),
             draw_calls,

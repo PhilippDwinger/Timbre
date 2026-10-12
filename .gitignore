@@ -1,11 +1,14 @@
 /target
 **/*.rs.bk
 *.wasm
+# … außer den fertig gebauten Script-Gästen (siehe tools/luau-gast)
+!/assets/scripting/*.wasm
 /pkg
 dist/
 .vscode/settings.json
 .DS_Store
 Thumbs.db
 
-# Mit F5 gespeicherte Testszene (Laufzeit-Ergebnis, kein Quell-Asset)
-/assets/szenen/gespeichert.tbr
+
+# Alte Test-Speicherstände aus Meilenstein 4
+/assets/szenen/

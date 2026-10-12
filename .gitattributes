@@ -1,2 +1,4 @@
 *.tbr binary
 *.png binary
+*.wasm binary
+*.luau text eol=lf

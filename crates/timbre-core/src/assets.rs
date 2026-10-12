@@ -12,6 +12,7 @@ use crate::renderer::{Renderer, TexturId};
 pub struct Assets {
     texturen: HashMap<AssetId, TexturId>,
     rueckwaerts: HashMap<TexturId, AssetId>,
+    namen: HashMap<String, TexturId>,
 }
 
 impl Assets {
@@ -28,12 +29,26 @@ impl Assets {
         let id = renderer.textur_aus_tbr(&textur);
         self.texturen.insert(textur.id, id);
         self.rueckwaerts.insert(id, textur.id);
+        self.namen.insert(textur.name.clone(), id);
         Ok(id)
     }
 
     /// Asset-ID → geladene Textur.
     pub fn textur(&self, asset: AssetId) -> Option<TexturId> {
         self.texturen.get(&asset).copied()
+    }
+
+    /// Texturname (aus der .tbr-Datei) → geladene Textur. Scripts benutzen Namen.
+    pub fn textur_namen(&self) -> &HashMap<String, TexturId> {
+        &self.namen
+    }
+
+    /// Name einer geladenen Textur.
+    pub fn name_von(&self, textur: TexturId) -> Option<&str> {
+        self.namen
+            .iter()
+            .find(|(_, &t)| t == textur)
+            .map(|(n, _)| n.as_str())
     }
 
     /// Geladene Textur → Asset-ID (zum Speichern von Szenen).

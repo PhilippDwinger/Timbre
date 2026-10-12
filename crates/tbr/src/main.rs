@@ -4,6 +4,7 @@
 //!   tbr textur bild.png  [ziel.tbr]      PNG → Textur
 //!   tbr mesh  modell.glb [ziel.tbr]      glTF/GLB (z. B. aus Blender) → Mesh
 //!   tbr text  szene.tbr                  Inhalt einer Szene als Text ausgeben
+//!   tbr szene szene.json [ziel.tbr]      Szenen-Text (JSON) → Szene
 //!
 //! Wird in eine bestehende .tbr-Datei gleichen Typs importiert, bleibt deren Asset-ID
 //! erhalten – Szenen, die darauf verweisen, funktionieren also weiter.
@@ -26,6 +27,8 @@ fn main() -> ExitCode {
     {
         ["info", datei] => info(Path::new(datei)),
         ["text", datei] => szenen_text(Path::new(datei)),
+        ["szene", quelle] => szene(Path::new(quelle), &ziel_neben(quelle)),
+        ["szene", quelle, ziel] => szene(Path::new(quelle), Path::new(ziel)),
         ["textur", quelle] => textur(Path::new(quelle), &ziel_neben(quelle)),
         ["textur", quelle, ziel] => textur(Path::new(quelle), Path::new(ziel)),
         ["mesh", quelle] => mesh(Path::new(quelle), &ziel_neben(quelle)),
@@ -51,7 +54,8 @@ fn hilfe() {
          tbr info   datei.tbr              Inhalt anzeigen\n  \
          tbr textur bild.png  [ziel.tbr]   PNG in Textur umwandeln\n  \
          tbr mesh   modell.glb [ziel.tbr]  glTF/GLB in Mesh umwandeln\n  \
-         tbr text   szene.tbr              Inhalt einer Szene anzeigen\n\n\
+         tbr text   szene.tbr              Inhalt einer Szene anzeigen\n  \
+         tbr szene  szene.json [ziel.tbr]  Szenen-Text (JSON) in Szene umwandeln\n\n\
          Ohne Ziel wird neben der Quelle eine .tbr-Datei mit gleichem Namen angelegt.",
         env!("CARGO_PKG_VERSION")
     );
@@ -133,6 +137,19 @@ fn szenen_text(pfad: &Path) -> Ergebnis<()> {
     // Fehler beim Ausgeben ignorieren (z. B. wenn die Ausgabe vorzeitig abgebrochen wird).
     use std::io::Write;
     let _ = writeln!(std::io::stdout().lock(), "{}", szene.text);
+    Ok(())
+}
+
+fn szene(quelle: &Path, ziel: &Path) -> Ergebnis<()> {
+    println!("{} → {}", quelle.display(), ziel.display());
+    let text = String::from_utf8(lesen(quelle)?).map_err(|_| "Datei ist kein UTF-8-Text")?;
+    let s = timbre_tbr::Szene {
+        id: id_fuer(ziel, AssetTyp::Szene),
+        name: name_aus(ziel),
+        text,
+    };
+    schreiben(ziel, &s.zu_bytes())?;
+    println!("  fertig: {} Zeilen, ID {}", s.text.lines().count(), s.id);
     Ok(())
 }
 

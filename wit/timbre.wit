@@ -1,29 +1,48 @@
-// Timbre Script-Schnittstelle – Entwurf v0.1
-// Jede Script-Sprache (Lua, Luau, Python, Java, …) ist ein WASM-Gast dieser Welt.
-package timbre:engine@0.1.0;
+// Timbre Script-Schnittstelle – v0.2 (Meilenstein 5)
+//
+// Beschreibung der Funktionen, die Scripts in jeder Sprache bekommen.
+// Technisch sind die Gäste derzeit einfache WebAssembly-Core-Module mit schmaler
+// C-Schnittstelle (siehe docs/scripting-abi.md) – diese Datei ist die sprachneutrale
+// Beschreibung derselben Funktionen.
+package timbre:engine@0.2.0;
 
-/// Funktionen, die die Engine den Scripts anbietet.
 interface host {
-    /// Ausgabe ins Engine-Log.
+    /// Ausgabe in die Konsole.
     log: func(message: string);
-
-    /// Zeit seit Engine-Start in Sekunden.
+    /// Sekunden seit ▶.
     time: func() -> f64;
 
-    /// Ein Objekt in der Szene erzeugen, liefert seine ID.
+    /// Objekte (IDs sind 64-Bit-Zahlen).
     spawn: func(name: string) -> u64;
+    find: func(name: string) -> option<u64>;
+    destroy: func(entity: u64);
 
-    /// Position eines Objekts setzen.
-    set-position: func(entity: u64, x: f32, y: f32, z: f32);
+    set-position: func(entity: u64, x: f32, y: f32);
+    get-position: func(entity: u64) -> option<tuple<f32, f32>>;
+    set-rotation: func(entity: u64, radians: f32);
+    get-rotation: func(entity: u64) -> f32;
+    set-scale: func(entity: u64, x: f32, y: f32);
+    set-velocity: func(entity: u64, vx: f32, vy: f32, spin: f32);
+    /// false, wenn es die Textur nicht gibt.
+    set-sprite: func(entity: u64, texture: string, width: f32, height: f32, layer: s32) -> bool;
+    set-color: func(entity: u64, r: f32, g: f32, b: f32, a: f32);
+
+    /// Eingabe
+    key-down: func(key: string) -> bool;
+    key-pressed: func(key: string) -> bool;
+    mouse-position: func() -> tuple<f32, f32>;
+
+    /// Kamera
+    set-camera: func(x: f32, y: f32, zoom: f32);
 }
 
 /// Ein Script: bekommt Engine-Funktionen, liefert Lebenszyklus-Callbacks.
 world script {
     import host;
 
-    /// Einmal beim Laden des Scripts.
+    /// Einmal nach dem Laden aller Scripts (▶).
     export on-start: func();
 
-    /// Jeden Frame, dt = Sekunden seit dem letzten Frame.
+    /// 60-mal pro Sekunde, dt = Sekunden seit dem letzten Aufruf.
     export on-update: func(dt: f32);
 }

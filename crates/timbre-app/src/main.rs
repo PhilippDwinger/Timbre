@@ -1,11 +1,15 @@
-//! Timbre-Starter: öffnet ein Fenster (nativ) bzw. ein Canvas (Browser),
-//! treibt den Game Loop an und lässt den Renderer zeichnen.
+//! Timbre Studio – startet Fenster (nativ) bzw. Canvas (Browser), treibt den Game Loop an
+//! und zeichnet Szene und Editor-Oberfläche.
 
-mod spiel;
+mod luau_farben;
+mod oberflaeche;
+mod projekt;
+mod studio;
 
 use std::sync::Arc;
 
-use spiel::{Anzeige, Spiel};
+use oberflaeche::Oberflaeche;
+use studio::Studio;
 use timbre_core::{FesterTakt, Input, Renderer};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -25,10 +29,10 @@ enum TimbreEvent {
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    spiel: Option<Spiel>,
+    oberflaeche: Option<Oberflaeche>,
+    studio: Option<Studio>,
     input: Input,
     takt: FesterTakt,
-    anzeige: Anzeige,
     minimiert: bool,
     #[cfg(target_arch = "wasm32")]
     proxy: Option<winit::event_loop::EventLoopProxy<TimbreEvent>>,
@@ -39,52 +43,78 @@ impl App {
         Self {
             window: None,
             renderer: None,
-            spiel: None,
+            oberflaeche: None,
+            studio: None,
             input: Input::default(),
             takt: FesterTakt::new(LOGIK_HZ),
-            anzeige: Anzeige::default(),
             minimiert: false,
             #[cfg(target_arch = "wasm32")]
             proxy: None,
         }
     }
 
-    /// Renderer ist fertig (nativ sofort, im Browser später): Spiel aufbauen und loslegen.
+    /// Renderer ist fertig (nativ sofort, im Browser später): Studio aufbauen und loslegen.
     fn renderer_bereit(&mut self, mut renderer: Renderer) {
-        if let Some(w) = self.window.as_ref() {
-            // Größe kann sich geändert haben, während der Renderer gebaut wurde.
-            let size = w.inner_size();
-            renderer.resize(size.width, size.height);
-            w.request_redraw();
-        }
-        self.spiel = Some(Spiel::new(&mut renderer));
+        let Some(w) = self.window.clone() else { return };
+        // Größe kann sich geändert haben, während der Renderer gebaut wurde.
+        let size = w.inner_size();
+        renderer.resize(size.width, size.height);
+        let studio = Studio::new(&mut renderer);
+        w.set_title(&studio.titel());
+        self.oberflaeche = Some(Oberflaeche::new(&w, &renderer));
+        self.studio = Some(studio);
         self.renderer = Some(renderer);
+        w.request_redraw();
     }
 
-    /// Ein gezeichneter Frame: fällige Logik-Schritte rechnen, dann zeichnen.
+    /// Ein gezeichneter Frame: Oberfläche, fällige Logik-Schritte, dann zeichnen.
     fn frame(&mut self) {
-        let (Some(window), Some(renderer), Some(spiel)) = (
-            self.window.as_ref(),
-            self.renderer.as_mut(),
-            self.spiel.as_mut(),
+        let App {
+            window,
+            renderer,
+            oberflaeche,
+            studio,
+            input,
+            takt,
+            minimiert,
+            ..
+        } = self;
+        let (Some(window), Some(renderer), Some(ober), Some(studio)) = (
+            window.as_ref(),
+            renderer.as_mut(),
+            oberflaeche.as_mut(),
+            studio.as_mut(),
         ) else {
             return;
         };
-        if self.minimiert {
+        if *minimiert {
             return; // nicht zeichnen; nach dem Wiederherstellen geht es weiter
         }
 
-        let schritte = self.takt.frame();
-        let bildschirm = renderer.groesse();
+        // 1. Oberfläche (Knöpfe, Klicks in die Szene, Script-Editor …)
+        let mut ausgabe = ober.ausfuehren(window, |ui| studio.ui(ui));
+        ober.texturen_aktualisieren(renderer, &mut ausgabe);
+        let tastatur_frei = !ober.ctx.egui_wants_keyboard_input();
+
+        // 2. Logik im festen Takt
+        let schritte = takt.frame();
         for _ in 0..schritte {
-            spiel.schritt(self.takt.dt(), &self.input, bildschirm);
-            self.input.schritt_ende();
+            studio.schritt(takt.dt(), input, tastatur_frei);
+            input.schritt_ende();
         }
 
-        let alpha = self.takt.alpha();
-        spiel.sprites_bauen(alpha);
-        let stat = renderer.zeichnen(&spiel.kamera(alpha), spiel.sprites());
-        self.anzeige.frame(schritte, stat, window);
+        // 3. Zeichnen: Szene in ihren Bereich, Oberfläche darüber
+        if let Some(mut frame) = renderer.frame_beginnen() {
+            let mut statistik = Default::default();
+            if let Some(bereich) = studio.bereich() {
+                let (kamera, sprites) = studio.sprites_bauen(takt.alpha());
+                statistik = renderer.sprites_zeichnen(&mut frame, &kamera, sprites, bereich);
+            }
+            studio.statistik_setzen(statistik, schritte);
+            let size = window.inner_size();
+            ober.zeichnen(renderer, &mut frame, ausgabe, [size.width, size.height]);
+            renderer.frame_beenden(frame);
+        }
 
         // Sofort den nächsten Frame anfordern → Dauerschleife im Takt des Monitors (VSync).
         window.request_redraw();
@@ -97,15 +127,11 @@ impl ApplicationHandler<TimbreEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title(format!(
-            "{} {}",
-            timbre_core::NAME,
-            timbre_core::VERSION
-        ));
+        let attrs = Window::default_attributes().with_title("Timbre Studio");
 
         // Nativ: feste Startgröße. Browser: Canvas an die Seite hängen, Größe kommt aus dem CSS.
         #[cfg(not(target_arch = "wasm32"))]
-        let attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+        let attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(1440.0, 860.0));
         #[cfg(target_arch = "wasm32")]
         let attrs = {
             use winit::platform::web::WindowAttributesExtWebSys;
@@ -145,17 +171,12 @@ impl ApplicationHandler<TimbreEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let (Some(w), Some(o)) = (self.window.as_ref(), self.oberflaeche.as_mut()) {
+            o.ereignis(w, &event);
+        }
         self.input.verarbeite(&event);
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            #[cfg(not(target_arch = "wasm32"))]
-            WindowEvent::KeyboardInput {
-                event: ref taste, ..
-            } if taste.physical_key
-                == winit::keyboard::PhysicalKey::Code(timbre_core::KeyCode::Escape) =>
-            {
-                event_loop.exit()
-            }
             WindowEvent::Resized(size) => {
                 self.minimiert = size.width == 0 || size.height == 0;
                 if let Some(r) = self.renderer.as_mut() {
@@ -202,7 +223,7 @@ fn main() {
 #[cfg(not(target_arch = "wasm32"))]
 fn logging_starten() {
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn"),
+        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
     )
     .init();
 }

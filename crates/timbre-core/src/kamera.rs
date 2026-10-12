@@ -42,6 +42,12 @@ impl Kamera2d {
         self.position + d / self.zoom
     }
 
+    /// Weltposition → Pixelposition (Gegenstück zu [`Kamera2d::bildschirm_zu_welt`]).
+    pub fn welt_zu_bildschirm(&self, welt: Vec2, bildschirm: Vec2) -> Vec2 {
+        let d = (welt - self.position) * self.zoom;
+        Vec2::new(bildschirm.x * 0.5 + d.x, bildschirm.y * 0.5 - d.y)
+    }
+
     /// Zwischen zwei Kamerazuständen überblenden (für flüssiges Zeichnen).
     pub fn lerp(&self, ziel: &Kamera2d, t: f32) -> Kamera2d {
         Kamera2d {
@@ -76,6 +82,18 @@ mod tests {
             k.bildschirm_zu_welt(Vec2::new(400.0, 0.0), b),
             Vec2::new(100.0, 200.0)
         );
+    }
+
+    #[test]
+    fn welt_und_bildschirm_hin_und_zurueck() {
+        let k = Kamera2d {
+            position: Vec2::new(-40.0, 12.0),
+            zoom: 0.75,
+        };
+        let b = Vec2::new(1024.0, 600.0);
+        let p = Vec2::new(123.0, 456.0);
+        let zurueck = k.welt_zu_bildschirm(k.bildschirm_zu_welt(p, b), b);
+        assert!((zurueck - p).length() < 1e-3);
     }
 
     #[test]

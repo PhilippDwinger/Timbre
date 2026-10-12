@@ -13,7 +13,7 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 pub use winit::keyboard::KeyCode;
 use winit::keyboard::PhysicalKey;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Input {
     gehalten: HashSet<KeyCode>,
     neu: HashSet<KeyCode>,
@@ -102,5 +102,55 @@ impl Input {
         self.neu.clear();
         self.maus_neu.clear();
         self.scroll = 0.0;
+    }
+}
+
+/// Tastenname aus einem Script → Taste. Groß-/Kleinschreibung egal.
+/// Buchstaben ("W"), Ziffern ("1"), "Space", "Enter", "Escape", "Shift", "Ctrl", "Tab",
+/// "Up", "Down", "Left", "Right".
+pub fn taste_aus_name(name: &str) -> Option<KeyCode> {
+    use KeyCode::*;
+    let n = name.trim().to_ascii_lowercase();
+    if n.len() == 1 {
+        let c = n.chars().next()?;
+        const BUCHSTABEN: [KeyCode; 26] = [
+            KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN,
+            KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+        ];
+        const ZIFFERN: [KeyCode; 10] = [
+            Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+        ];
+        if c.is_ascii_lowercase() {
+            return Some(BUCHSTABEN[(c as u8 - b'a') as usize]);
+        }
+        if c.is_ascii_digit() {
+            return Some(ZIFFERN[(c as u8 - b'0') as usize]);
+        }
+    }
+    Some(match n.as_str() {
+        "space" | "leertaste" => Space,
+        "enter" | "return" => Enter,
+        "escape" | "esc" => Escape,
+        "shift" => ShiftLeft,
+        "ctrl" | "strg" => ControlLeft,
+        "tab" => Tab,
+        "up" | "hoch" => ArrowUp,
+        "down" | "runter" => ArrowDown,
+        "left" | "links" => ArrowLeft,
+        "right" | "rechts" => ArrowRight,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tastennamen() {
+        assert_eq!(taste_aus_name("W"), Some(KeyCode::KeyW));
+        assert_eq!(taste_aus_name("space"), Some(KeyCode::Space));
+        assert_eq!(taste_aus_name("7"), Some(KeyCode::Digit7));
+        assert_eq!(taste_aus_name("quatsch"), None);
     }
 }

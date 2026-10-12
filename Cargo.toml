@@ -11,3 +11,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["Philipp Dwinger"]
+
+# Abhängigkeiten (wgpu, wasmtime, egui …) auch beim normalen `cargo run` optimiert bauen.
+# Der erste Build dauert etwas länger, dafür startet das Studio schnell und läuft flüssig.
+[profile.dev.package."*"]
+opt-level = 2

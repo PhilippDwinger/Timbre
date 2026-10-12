@@ -4,6 +4,8 @@ pub mod assets;
 pub mod input;
 pub mod kamera;
 pub mod renderer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scripting;
 pub mod szene;
 pub mod welt;
 pub mod zeit;
@@ -12,7 +14,7 @@ pub use assets::Assets;
 pub use glam::{vec2, Vec2};
 pub use input::{Input, KeyCode, MouseButton};
 pub use kamera::Kamera2d;
-pub use renderer::{FrameStatistik, Renderer, Sprite, TexturId};
+pub use renderer::{Bereich, Frame, FrameStatistik, Renderer, Sprite, TexturId};
 /// Das Asset-Format, damit Spiele nicht extra `timbre-tbr` einbinden müssen.
 pub use timbre_tbr as tbr;
 pub use welt::{Bewegung, Bild, Name, Objekt, Transform, Welt};
