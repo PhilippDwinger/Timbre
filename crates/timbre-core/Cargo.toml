@@ -5,3 +5,5 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+wgpu = "30"
+log = "0.4"

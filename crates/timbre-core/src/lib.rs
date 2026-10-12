@@ -1,5 +1,9 @@
 //! Timbre-Kern: hier entstehen Renderer, ECS, Asset-System und Scripting-Host.
 
+pub mod renderer;
+
+pub use renderer::Renderer;
+
 pub const NAME: &str = "Timbre";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

@@ -45,4 +45,6 @@ Repo: https://github.com/PhilippDwinger/Timbre
 11. [ ] Bridge-Client (nach Bridge 1.1)
 
 ## Status
-- Grundgerüst angelegt: Workspace, `timbre-core` (Bibliothek), `timbre-app` (Starter), WIT-Entwurf.
+- Grundgerüst angelegt: Workspace, `timbre-core` (Bibliothek), `timbre-app` (Starter), WIT-Entwurf. Läuft bei Paddy.
+- Meilenstein 1a (nativ) gebaut, wartet auf Validierung: winit 0.30 + wgpu 30. `timbre-core/src/renderer.rs` kennt kein Fenster-Crate (bekommt nur ein `SurfaceTarget`), damit er später auch im Browser läuft. Dreieck kommt ohne Vertex-Buffer direkt aus `shaders/dreieck.wgsl`.
+  - wgpu-30-Eigenheiten: `InstanceDescriptor::new_without_display_handle()`, `get_current_texture()` liefert `CurrentSurfaceTexture` (kein Result), Präsentieren über `queue.present(frame)`.
