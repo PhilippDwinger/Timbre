@@ -32,8 +32,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - Nach jedem abgeschlossenen Meilenstein: Status unten aktualisieren.
 
 ## Meilensteine
-1. [ ] Fenster + wgpu: farbiges Dreieck nativ, danach dasselbe im Browser (wasm32-unknown-unknown)
-2. [ ] Fixed-Timestep Game Loop, Input, Kamera, Sprite-Rendering mit Batching
+1. [x] Fenster + wgpu: farbiges Dreieck nativ, danach dasselbe im Browser (wasm32-unknown-unknown)
+2. [~] Fixed-Timestep Game Loop, Input, Kamera, Sprite-Rendering mit Batching
 3. [ ] Asset-Format `.tbr` v0 (Mesh, Textur, Szene) – wichtigste Entscheidung, alles baut darauf auf
 4. [ ] ECS
 5. [ ] WASM-Scripting-Host (wasmtime) + erste Sprache: **Luau**, dann **Lua**
@@ -48,4 +48,12 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - Grundgerüst angelegt: Workspace, `timbre-core` (Bibliothek), `timbre-app` (Starter), WIT-Entwurf. Läuft bei Paddy.
 - Meilenstein 1a (nativ) ✅ von Paddy validiert (Dreieck sichtbar, committet): winit 0.30 + wgpu 30. `timbre-core/src/renderer.rs` kennt kein Fenster-Crate (bekommt nur ein `SurfaceTarget`), damit er später auch im Browser läuft. Dreieck kommt ohne Vertex-Buffer direkt aus `shaders/dreieck.wgsl`.
   - wgpu-30-Eigenheiten: `InstanceDescriptor::new_without_display_handle()`, `get_current_texture()` liefert `CurrentSurfaceTexture` (kein Result), Präsentieren über `queue.present(frame)`.
-- Meilenstein 1b (Browser) gebaut, wartet auf Validierung: Web-Build mit **Trunk** aus `crates/timbre-app` (`index.html` dort). Im Browser wird der Renderer asynchron gebaut (`spawn_local`) und kommt per `TimbreEvent::RendererBereit` über den `EventLoopProxy` zurück; Event-Loop dort über `spawn_app`. Logs/Panics in die Browser-Konsole. Braucht einen WebGPU-fähigen Browser (Chrome/Edge).
+- Meilenstein 1b (Browser) ✅ von Paddy validiert: Web-Build mit **Trunk** aus `crates/timbre-app` (`index.html` dort). Im Browser wird der Renderer asynchron gebaut (`spawn_local`) und kommt per `TimbreEvent::RendererBereit` über den `EventLoopProxy` zurück; Event-Loop dort über `spawn_app`. Logs/Panics in die Browser-Konsole. Braucht einen WebGPU-fähigen Browser (Chrome/Edge).
+- Meilenstein 2 gebaut (in Claudes Testumgebung mit Software-GPU geprüft, wartet auf Paddys Validierung):
+  - `zeit.rs` – `FesterTakt`: 60 Logik-Schritte/s, Akkumulator, max. 0,25 s nachholen, `alpha` für Interpolation beim Zeichnen. Nutzt `web-time` (std `Instant` stürzt im Browser ab).
+  - `input.rs` – `Input`: gehalten / neu gedrückt (pro Logik-Schritt), Maus, Mausrad; Tasten über physische Position (`KeyCode::KeyW`).
+  - `kamera.rs` – `Kamera2d`: Position + Zoom, 1 Welteinheit = 1 Pixel bei Zoom 1, Y nach oben. Ortho-Matrix von Hand (glam 0.34 hat die Projektions-API umgebaut).
+  - `renderer.rs` – Sprite-Batching per Instancing: Sprites nach Textur stabil sortiert, ein Draw Call pro Textur-Gruppe, Instanz-Puffer wächst (Zweierpotenz). Alpha-Blending.
+  - Folge der Sortierung: Zeichenreihenfolge zwischen Texturen ist noch nicht steuerbar → kommt mit Ebenen/Z-Wert (spätestens mit ECS).
+  - Testszene `timbre-app/src/spiel.rs` (Steuerung siehe README), Texturen per Code (`texturen.rs`) bis `.tbr` existiert. Titelzeile zeigt FPS, Logik-Schritte/s, Sprites, Draw Calls.
+  - Gemessen (Software-GPU): 12.580 Sprites = 2 Draw Calls.

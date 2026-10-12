@@ -6,4 +6,9 @@ authors.workspace = true
 
 [dependencies]
 wgpu = "30"
+winit = "0.30"
 log = "0.4"
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+# Instant, das auch im Browser funktioniert (std::time::Instant stürzt dort ab).
+web-time = "1"

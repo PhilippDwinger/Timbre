@@ -21,4 +21,17 @@ trunk serve --open
 ```
 Braucht einen Browser mit WebGPU (Chrome oder Edge).
 
+## Testszene (Meilenstein 2)
+| Taste | Wirkung |
+|---|---|
+| WASD / Pfeiltasten | Kamera bewegen |
+| Mausrad / Q, E | Zoomen (zur Maus hin) |
+| Linke Maustaste halten | Blätter an der Maus verstreuen |
+| Leertaste | 5.000 Objekte dazu |
+| R | Zurücksetzen |
+| C | Alles löschen |
+| Esc | Beenden (nur nativ) |
+
+Die Titelzeile zeigt FPS, Logik-Schritte pro Sekunde, Anzahl Sprites und Draw Calls.
+
 Details zu Architektur und Fahrplan: siehe `CLAUDE.md`.
