@@ -9,10 +9,14 @@
 //!   C                   Alles löschen
 
 use timbre_core::{
-    vec2, FrameStatistik, Input, Kamera2d, KeyCode, MouseButton, Renderer, Sprite, TexturId, Vec2,
+    tbr, vec2, FrameStatistik, Input, Kamera2d, KeyCode, MouseButton, Renderer, Sprite, TexturId,
+    Vec2,
 };
 
-use crate::texturen;
+/// Die Texturen werden vorerst ins Programm eingebaut (funktioniert auch im Browser ohne Dateisystem).
+/// Später lädt ein Asset-System sie zur Laufzeit – lokal oder vom Homeserver.
+const JAHRESRINGE_TBR: &[u8] = include_bytes!("../../../assets/texturen/jahresringe.tbr");
+const BLATT_TBR: &[u8] = include_bytes!("../../../assets/texturen/blatt.tbr");
 
 /// Spielfeld: halbe Breite/Höhe in Welteinheiten.
 const ARENA: Vec2 = Vec2::new(1600.0, 1000.0);
@@ -52,8 +56,11 @@ pub struct Spiel {
 
 impl Spiel {
     pub fn new(renderer: &mut Renderer) -> Self {
-        let ring = renderer.textur_laden(64, 64, &texturen::jahresringe(64));
-        let blatt = renderer.textur_laden(64, 64, &texturen::blatt(64));
+        let ring = renderer.textur_aus_tbr(
+            &tbr::Textur::aus_bytes(JAHRESRINGE_TBR).expect("jahresringe.tbr kaputt"),
+        );
+        let blatt =
+            renderer.textur_aus_tbr(&tbr::Textur::aus_bytes(BLATT_TBR).expect("blatt.tbr kaputt"));
         let kamera = Kamera2d {
             position: Vec2::ZERO,
             zoom: 0.5,

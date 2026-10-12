@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/timbre-tbr",
     "crates/timbre-core",
     "crates/timbre-app",
+    "crates/tbr",
 ]
 
 [workspace.package]

@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+timbre-tbr = { path = "../timbre-tbr" }
 wgpu = "30"
 winit = "0.30"
 log = "0.4"

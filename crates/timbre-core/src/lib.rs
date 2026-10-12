@@ -9,6 +9,8 @@ pub use glam::{vec2, Vec2};
 pub use input::{Input, KeyCode, MouseButton};
 pub use kamera::Kamera2d;
 pub use renderer::{FrameStatistik, Renderer, Sprite, TexturId};
+/// Das Asset-Format, damit Spiele nicht extra `timbre-tbr` einbinden müssen.
+pub use timbre_tbr as tbr;
 pub use zeit::FesterTakt;
 
 pub const NAME: &str = "Timbre";

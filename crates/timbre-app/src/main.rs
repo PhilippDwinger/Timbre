@@ -2,7 +2,6 @@
 //! treibt den Game Loop an und lässt den Renderer zeichnen.
 
 mod spiel;
-mod texturen;
 
 use std::sync::Arc;
 

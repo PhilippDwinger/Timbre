@@ -1,0 +1,12 @@
+[package]
+name = "tbr"
+description = "Kommandozeilen-Werkzeug für .tbr-Dateien (Timbre)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+timbre-tbr = { path = "../timbre-tbr" }
+png = "0.18"
+gltf = "1"
+glam = "0.34"

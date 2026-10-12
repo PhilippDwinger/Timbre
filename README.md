@@ -34,4 +34,13 @@ Braucht einen Browser mit WebGPU (Chrome oder Edge).
 
 Die Titelzeile zeigt FPS, Logik-Schritte pro Sekunde, Anzahl Sprites und Draw Calls.
 
+## Assets umwandeln (`tbr`)
+```
+cargo run -p tbr -- textur assets\quellen\blatt.png assets\texturen\blatt.tbr
+cargo run -p tbr -- mesh assets\quellen\kiste.glb assets\meshes\kiste.tbr
+cargo run -p tbr -- info assets\texturen\blatt.tbr
+```
+Wird erneut in dieselbe `.tbr`-Datei importiert, bleibt ihre Asset-ID erhalten.
+Aus Blender: *Datei → Exportieren → glTF 2.0 (.glb)*. Formatbeschreibung: `docs/tbr-format.md`.
+
 Details zu Architektur und Fahrplan: siehe `CLAUDE.md`.

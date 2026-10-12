@@ -1,0 +1,9 @@
+[package]
+name = "timbre-tbr"
+description = "Lesen und Schreiben des Timbre-Asset-Formats .tbr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# Absichtlich ohne Abhängigkeiten: soll überall laufen (Engine, Browser, Werkzeuge).
+[dependencies]

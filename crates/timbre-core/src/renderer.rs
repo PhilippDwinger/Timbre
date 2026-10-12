@@ -307,6 +307,18 @@ impl Renderer {
         TexturId(self.texturen.len() as u32 - 1)
     }
 
+    /// Lädt eine Textur aus dem `.tbr`-Format auf die Grafikkarte.
+    pub fn textur_aus_tbr(&mut self, textur: &timbre_tbr::Textur) -> TexturId {
+        log::info!(
+            "Textur '{}' ({}×{}, ID {})",
+            textur.name,
+            textur.breite,
+            textur.hoehe,
+            textur.id
+        );
+        self.textur_laden(textur.breite, textur.hoehe, &textur.pixel)
+    }
+
     /// Aktuelle Zeichenfläche in Pixeln.
     pub fn groesse(&self) -> Vec2 {
         Vec2::new(self.config.width as f32, self.config.height as f32)
