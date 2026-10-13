@@ -18,7 +18,11 @@ hecs = "0.11"
 # Szenen als lesbares JSON
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# PNG-Bilder importieren (Drag & Drop ins Studio)
+png = "0.18"
 
 # Scripting-Host (nativ). Im Browser übernimmt das später die eingebaute WebAssembly-Laufzeit.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "gc", "gc-drc", "parallel-compilation"] }
+# Sounds abspielen (WAV, OGG, MP3, FLAC). Im Browser später über WebAudio.
+rodio = { version = "0.23", default-features = false, features = ["playback", "wav", "vorbis", "mp3", "flac"] }

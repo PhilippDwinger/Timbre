@@ -54,6 +54,40 @@ pub struct Kontext {
     pub beruehrungen: Beruehrungen,
     /// Texte auf dem Bildschirm (`ui_text`), nach Schlüssel
     pub texte: BTreeMap<String, BildschirmText>,
+    /// Namen der Sounds im Projekt (ohne Endung) – für `play_sound`
+    pub sound_namen: std::collections::HashSet<String>,
+    /// Von Scripts gewünschte Sound-Befehle; die Engine spielt sie nach dem Aufruf ab
+    pub sound_befehle: Vec<SoundBefehl>,
+    /// `timbre.broadcast` dieser Laufzeit – für Scripts anderer Sprachen (siehe [`ScriptLaufzeit::nachricht_zustellen`])
+    pub ausgehend: Vec<Nachricht>,
+}
+
+/// Eine Nachricht (`timbre.broadcast`) zwischen Script-Sprachen. Daten nur einfach – Tabellen werden zu nil.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nachricht {
+    pub name: String,
+    pub daten: Wert,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Wert {
+    Nichts,
+    Bool(bool),
+    Zahl(f64),
+    Ganzzahl(i64),
+    Text(String),
+}
+
+/// Was ein Script mit Sounds machen will (`timbre.play_sound` / `timbre.stop_sounds`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SoundBefehl {
+    Abspielen {
+        name: String,
+        lautstaerke: f32,
+        schleife: bool,
+    },
+    /// Leerer Name = alle Sounds
+    Stoppen(String),
 }
 
 /// Ein Text über dem Spiel (Punkte, Leben …). Position in Pixeln ab links oben im Spielbereich.
@@ -106,6 +140,8 @@ impl ScriptMotor {
             laden: instanz
                 .get_typed_func(&mut store, "timbre_laden")
                 .map_err(|_| f("timbre_laden"))?,
+            neu_laden: instanz.get_typed_func(&mut store, "timbre_neu_laden").ok(),
+            nachricht: instanz.get_typed_func(&mut store, "timbre_nachricht").ok(),
             stoppen: instanz
                 .get_typed_func(&mut store, "timbre_script_stoppen")
                 .map_err(|_| f("timbre_script_stoppen"))?,
@@ -137,7 +173,11 @@ pub struct ScriptLaufzeit {
     alloc: TypedFunc<i32, i32>,
     free: TypedFunc<i32, ()>,
     laden: TypedFunc<(i32, i32, i32, i32, i64, i64), i32>,
+    /// Fehlt in älteren Gast-Modulen – dann geht kein Live-Neuladen
+    neu_laden: Option<TypedFunc<(i32, i32, i32, i32, i64, i64), i32>>,
     stoppen: TypedFunc<i64, ()>,
+    /// Fehlt in älteren Gast-Modulen – dann keine Nachrichten aus anderen Sprachen
+    nachricht: Option<TypedFunc<(i32, i32, i32, f64, i32, i32), ()>>,
     beruehrung: TypedFunc<(i64, i64), ()>,
     /// Script-Objekte, deren Script läuft – verschwindet eins, wird sein Script angehalten.
     geladen: Vec<Objekt>,
@@ -218,6 +258,66 @@ impl ScriptLaufzeit {
         ok
     }
 
+    /// Während des Laufens eine neue Fassung eines Scripts übernehmen (Live-Neuladen).
+    ///
+    /// Die alte Fassung wird angehalten (auch ihre wartenden `task.wait`/`task.delay`), die neue
+    /// geladen und – wenn das Spiel schon läuft – ihr `on_start` aufgerufen. Objekte, die die alte
+    /// Fassung erzeugt hat, bleiben. Hat die neue Fassung einen Syntaxfehler, läuft die alte weiter.
+    /// `Err`, wenn das Gast-Modul kein Neuladen kann; sonst `Ok(true)` bei Erfolg.
+    pub fn script_neu_laden(
+        &mut self,
+        welt: &mut Welt,
+        name: &str,
+        quelle: &str,
+        script: Objekt,
+        eltern: Option<Objekt>,
+    ) -> Result<bool, String> {
+        let Some(neu_laden) = self.neu_laden.clone() else {
+            return Err("Diese Script-Sprache kann (noch) nicht live neu laden".into());
+        };
+        let id = objekt_nummer(script) as i64;
+        let eltern_id = eltern.map(|o| objekt_nummer(o) as i64).unwrap_or(0);
+        let ok = self
+            .mit_welt(welt, TREIBSTOFF_LADEN, |s| {
+                let n = s.text_ablegen(name)?;
+                let q = s.text_ablegen(quelle)?;
+                let r = neu_laden.call(
+                    &mut s.store,
+                    (n, name.len() as i32, q, quelle.len() as i32, id, eltern_id),
+                )?;
+                s.free.call(&mut s.store, n)?;
+                s.free.call(&mut s.store, q)?;
+                Ok(r == 0)
+            })
+            .unwrap_or(false);
+        if ok && !self.geladen.contains(&script) {
+            self.geladen.push(script);
+        }
+        self.verwaiste_anhalten(welt);
+        Ok(ok)
+    }
+
+    /// Nachricht aus einer anderen Sprache zustellen → `on_message(name, daten)` in allen Scripts.
+    pub fn nachricht_zustellen(&mut self, welt: &mut Welt, n: &Nachricht) {
+        let Some(f) = self.nachricht.clone() else { return };
+        self.mit_welt(welt, TREIBSTOFF_UPDATE, |s| {
+            let p = s.text_ablegen(&n.name)?;
+            let (art, zahl, text) = match &n.daten {
+                Wert::Nichts => (0, 0.0, ""),
+                Wert::Bool(b) => (1, *b as i32 as f64, ""),
+                Wert::Zahl(z) => (2, *z, ""),
+                Wert::Ganzzahl(z) => (4, *z as f64, ""),
+                Wert::Text(t) => (3, 0.0, t.as_str()),
+            };
+            let t = s.text_ablegen(text)?;
+            f.call(&mut s.store, (p, n.name.len() as i32, art, zahl, t, text.len() as i32))?;
+            s.free.call(&mut s.store, p)?;
+            s.free.call(&mut s.store, t)?;
+            Ok(())
+        });
+        self.verwaiste_anhalten(welt);
+    }
+
     /// Scripts anhalten, deren Objekt nicht mehr existiert (z. B. mit dem Eltern-Objekt gelöscht).
     fn verwaiste_anhalten(&mut self, welt: &Welt) {
         let weg: Vec<Objekt> = self.geladen.iter().copied().filter(|o| !welt.contains(*o)).collect();
@@ -247,7 +347,13 @@ impl ScriptLaufzeit {
     /// einem der beiden Objekte, wird sein `on_touch(anderes)` aufgerufen.
     pub fn kollisionen(&mut self, welt: &mut Welt) {
         let paare = physik::schritt(welt);
-        let neu: Vec<Paar> = self.store.data_mut().beruehrungen.aktualisieren(&paare);
+        self.beruehrungen_melden(welt, &paare);
+    }
+
+    /// Wie [`Self::kollisionen`], aber die Physik ist schon gelaufen (`paare` = ihr Ergebnis).
+    /// Für mehrere Laufzeiten (Sprachen) gleichzeitig: Physik einmal, melden an jede.
+    pub fn beruehrungen_melden(&mut self, welt: &mut Welt, paare: &[Paar]) {
+        let neu: Vec<Paar> = self.store.data_mut().beruehrungen.aktualisieren(paare);
         if neu.is_empty() || self.abgestuerzt {
             return;
         }
@@ -623,6 +729,52 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
         },
     )?;
 
+    l.func_wrap(
+        M,
+        "play_sound",
+        |mut c: Caller<'_, Kontext>, p: i32, n: i32, lautstaerke: f32, schleife: i32| -> wasmtime::Result<i32> {
+            let name = text(&mut c, p, n)?;
+            let name = name.rsplit_once('.').map(|(a, _)| a.to_string()).unwrap_or(name);
+            if !c.data().sound_namen.contains(&name) {
+                return Ok(0);
+            }
+            c.data_mut().sound_befehle.push(SoundBefehl::Abspielen {
+                name,
+                lautstaerke: lautstaerke.clamp(0.0, 4.0),
+                schleife: schleife != 0,
+            });
+            Ok(1)
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "nachricht",
+        |mut c: Caller<'_, Kontext>, p: i32, n: i32, art: i32, zahl: f64, tp: i32, tn: i32| -> wasmtime::Result<()> {
+            let name = text(&mut c, p, n)?;
+            let daten = match art {
+                1 => Wert::Bool(zahl != 0.0),
+                2 => Wert::Zahl(zahl),
+                3 => Wert::Text(text(&mut c, tp, tn)?),
+                4 => Wert::Ganzzahl(zahl as i64),
+                _ => Wert::Nichts,
+            };
+            let ausgehend = &mut c.data_mut().ausgehend;
+            if ausgehend.len() < 10_000 {
+                ausgehend.push(Nachricht { name, daten });
+            }
+            Ok(())
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "stop_sounds",
+        |mut c: Caller<'_, Kontext>, p: i32, n: i32| -> wasmtime::Result<()> {
+            let name = text(&mut c, p, n)?;
+            c.data_mut().sound_befehle.push(SoundBefehl::Stoppen(name));
+            Ok(())
+        },
+    )?;
+
     // Die wenigen Systemfunktionen, die die C-Bibliothek im Gast erwartet.
     // Dateien gibt es für Scripts nicht – alles meldet "nicht erlaubt".
     const W: &str = "wasi_snapshot_preview1";
@@ -631,6 +783,20 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
     l.func_wrap(W, "fd_fdstat_get", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
     l.func_wrap(W, "fd_seek", |_: i32, _: i64, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
     l.func_wrap(W, "fd_write", |_: i32, _: i32, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "fd_fdstat_set_flags", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "fd_read", |_: i32, _: i32, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "fd_renumber", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
+    l.func_wrap(W, "proc_exit", |code: i32| -> wasmtime::Result<()> {
+        Err(wasmtime::Error::msg(format!("Gast hat sich beendet (Code {code})")))
+    })?;
+    // Vorab geöffnete Ordner: keine (EBADF beendet die Suche der C-Bibliothek)
+    l.func_wrap(W, "fd_prestat_get", |_: i32, _: i32| -> i32 { 8 })?;
+    l.func_wrap(W, "fd_prestat_dir_name", |_: i32, _: i32, _: i32| -> i32 { 8 })?;
+    l.func_wrap(
+        W,
+        "path_open",
+        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i64, _: i64, _: i32, _: i32| -> i32 { NICHT_ERLAUBT },
+    )?;
     l.func_wrap(
         W,
         "clock_time_get",
@@ -712,6 +878,254 @@ mod tests {
         // "gut" läuft in beiden Schritten weiter, "fehler" nur einmal gemeldet
         assert_eq!(m.iter().filter(|x| **x == Meldung::Info("gut".into())).count(), 2);
         assert!(!l.abgestuerzt());
+    }
+
+    // --- Lua 5.4 (zweiter Gast, gleiche Schnittstelle) ---------------------------------
+
+    const LUA: &[u8] = include_bytes!("../../../assets/scripting/lua.wasm");
+
+    fn lua_laufzeit() -> (ScriptLaufzeit, Welt) {
+        let motor = ScriptMotor::neu(LUA).unwrap();
+        (motor.starten().unwrap(), Welt::new())
+    }
+
+    #[test]
+    fn lua_script_bewegt_objekt_und_wartet() {
+        let (mut l, mut welt) = lua_laufzeit();
+        let quelle = r#"
+            local kiste
+            function on_start()
+                kiste = timbre.spawn("Kiste")
+                print("erzeugt", math.type(kiste))
+                task.wait(0.05)
+                print("gewartet")
+            end
+            function on_update(dt)
+                local x, y = timbre.get_position(kiste)
+                timbre.set_position(kiste, x + 10 * dt, y)
+            end
+        "#;
+        assert!(l.script_laden(&mut welt, "test.lua", quelle, None, None));
+        l.start(&mut welt);
+        for _ in 0..60 {
+            l.update(&mut welt, 1.0 / 60.0);
+        }
+        assert_eq!(
+            meldungen(&mut l),
+            vec![
+                Meldung::Info("erzeugt integer".into()),
+                Meldung::Info("gewartet".into())
+            ]
+        );
+        let mut q = welt.query::<(&Name, &Transform)>();
+        let (name, t) = q.iter().next().unwrap();
+        assert_eq!(name.0, "Kiste");
+        assert!((t.position.x - 10.0).abs() < 0.01, "x = {}", t.position.x);
+    }
+
+    #[test]
+    fn lua_fehler_sandbox_und_endlosschleife() {
+        let (mut l, mut welt) = lua_laufzeit();
+        assert!(!l.script_laden(&mut welt, "kaputt.lua", "das ist ((kein lua", None, None));
+        assert!(l.script_laden(
+            &mut welt,
+            "fehler.lua",
+            "function on_update() local t = nil; print(t.x) end",
+            None,
+            None
+        ));
+        // Keine Dateien, kein Betriebssystem; eigene Umgebung pro Script
+        assert!(l.script_laden(
+            &mut welt,
+            "sandbox.lua",
+            "x = 1; print(io == nil, os == nil, require == nil, dofile == nil)",
+            None,
+            None
+        ));
+        assert!(l.script_laden(&mut welt, "andere.lua", "print(x == nil)", None, None));
+        l.update(&mut welt, 0.016);
+        let m = meldungen(&mut l);
+        assert!(
+            matches!(&m[0], Meldung::Fehler(t) if t.starts_with("kaputt.lua:1")),
+            "{m:?}"
+        );
+        assert!(m.contains(&Meldung::Info("true true true true".into())), "{m:?}");
+        assert!(m.contains(&Meldung::Info("true".into())), "{m:?}");
+        assert!(m
+            .iter()
+            .any(|x| matches!(x, Meldung::Fehler(t) if t.contains("fehler.lua:1") && t.contains("nil"))));
+        assert!(!l.abgestuerzt());
+        assert!(l.script_laden(
+            &mut welt,
+            "s.lua",
+            "function on_update() while true do end end",
+            None,
+            None
+        ));
+        l.update(&mut welt, 0.016);
+        assert!(l.abgestuerzt());
+    }
+
+    #[test]
+    fn lua_eltern_beruehrung_nachrichten_und_neu_laden() {
+        use crate::welt::Script;
+        let (mut l, mut welt) = lua_laufzeit();
+        let kiste = welt.spawn((Name("Kiste".into()), Transform::default()));
+        let s = welt.spawn((
+            Name("S".into()),
+            Eltern(kiste),
+            Script {
+                datei: "s.lua".into(),
+                aktiv: true,
+            },
+        ));
+        let quelle = r#"
+            print(timbre.find("Kiste") == script.parent, timbre.get_name(script.parent))
+            function on_start() timbre.broadcast("hallo", 7) end
+            function on_message(m, d) print(m, d) end
+        "#;
+        assert!(l.script_laden(&mut welt, "s.lua", quelle, Some(s), Some(kiste)));
+        l.start(&mut welt);
+        let neu = "function on_start() print('neu') end";
+        assert_eq!(l.script_neu_laden(&mut welt, "s.lua", neu, s, Some(kiste)), Ok(true));
+        assert_eq!(
+            meldungen(&mut l),
+            vec![
+                Meldung::Info("true Kiste".into()),
+                Meldung::Info("hallo 7".into()),
+                Meldung::Info("neu".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn nachrichten_zwischen_sprachen() {
+        let (mut luau, mut welt) = laufzeit();
+        let (mut lua, _) = lua_laufzeit();
+        assert!(luau.script_laden(
+            &mut welt,
+            "a.luau",
+            "function on_message(m, d) print('luau hat', m, d) end\nfunction on_start() timbre.broadcast('von_luau', {1}) end",
+            None,
+            None
+        ));
+        assert!(lua.script_laden(
+            &mut welt,
+            "b.lua",
+            "function on_message(m, d) print('lua hat', m, d) if m == 'von_luau' then timbre.broadcast('antwort', 42) end end",
+            None,
+            None
+        ));
+        luau.start(&mut welt);
+        lua.start(&mut welt);
+        // So verteilt das Studio: ausgehende Nachrichten an die jeweils andere Laufzeit
+        for _ in 0..3 {
+            for n in std::mem::take(&mut luau.kontext().ausgehend) {
+                lua.nachricht_zustellen(&mut welt, &n);
+            }
+            for n in std::mem::take(&mut lua.kontext().ausgehend) {
+                luau.nachricht_zustellen(&mut welt, &n);
+            }
+        }
+        let m_luau = meldungen(&mut luau);
+        let m_lua = meldungen(&mut lua);
+        // In der eigenen Sprache kommen auch Tabellen an, sofort
+        assert!(
+            matches!(&m_luau[0], Meldung::Info(t) if t.starts_with("luau hat von_luau table")),
+            "{m_luau:?}"
+        );
+        // Aus Luau kommt die Tabelle in Lua als nil an; die eigene Antwort hört Lua auch selbst
+        assert_eq!(
+            m_lua,
+            vec![
+                Meldung::Info("lua hat von_luau nil".into()),
+                Meldung::Info("lua hat antwort 42".into())
+            ]
+        );
+        assert_eq!(m_luau[1], Meldung::Info("luau hat antwort 42".into()), "{m_luau:?}");
+    }
+
+    #[test]
+    fn script_wird_live_neu_geladen() {
+        use crate::welt::Script;
+        let (mut l, mut welt) = laufzeit();
+        let s = welt.spawn((
+            Name("Zaehler".into()),
+            Script {
+                datei: "z.luau".into(),
+                aktiv: true,
+            },
+        ));
+        let alt = r#"
+            local n = 0
+            function on_start() task.delay(0.05, function() print("alte Aufgabe") end) end
+            function on_update() n += 1 end
+            function on_message(m) print("alt", n) end
+        "#;
+        assert!(l.script_laden(&mut welt, "z.luau", alt, Some(s), None));
+        l.start(&mut welt);
+        l.update(&mut welt, 0.016);
+        // Syntaxfehler: alte Fassung läuft weiter
+        assert_eq!(
+            l.script_neu_laden(&mut welt, "z.luau", "das ist ((kaputt", s, None),
+            Ok(false)
+        );
+        let m = meldungen(&mut l);
+        assert!(
+            matches!(&m[0], Meldung::Fehler(t) if t.contains("alte Fassung läuft weiter")),
+            "{m:?}"
+        );
+        // Neue Fassung: on_start läuft sofort, alte Aufgabe (task.delay) endet
+        let neu = r#"
+            function on_start() print("neu gestartet") end
+            function on_update() timbre.broadcast("x") end
+            function on_message(m) print("neu", m) end
+        "#;
+        assert_eq!(l.script_neu_laden(&mut welt, "z.luau", neu, s, None), Ok(true));
+        for _ in 0..10 {
+            l.update(&mut welt, 0.016);
+        }
+        let m = meldungen(&mut l);
+        assert_eq!(m[0], Meldung::Info("neu gestartet".into()));
+        assert!(m.contains(&Meldung::Info("neu x".into())));
+        assert!(
+            !m.iter().any(|x| matches!(x, Meldung::Info(t) if t.starts_with("alt"))),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn sounds_werden_angefordert() {
+        let (mut l, mut welt) = laufzeit();
+        l.kontext().sound_namen.insert("Muenze".into());
+        let quelle = r#"
+            timbre.play_sound("Muenze")
+            timbre.play_sound("Muenze.wav", 0.5, true)
+            timbre.stop_sounds("Muenze")
+            timbre.stop_sounds()
+            timbre.play_sound("Gibtsnicht")
+        "#;
+        assert!(!l.script_laden(&mut welt, "s.luau", quelle, None, None));
+        assert_eq!(
+            std::mem::take(&mut l.kontext().sound_befehle),
+            vec![
+                SoundBefehl::Abspielen {
+                    name: "Muenze".into(),
+                    lautstaerke: 1.0,
+                    schleife: false
+                },
+                SoundBefehl::Abspielen {
+                    name: "Muenze".into(),
+                    lautstaerke: 0.5,
+                    schleife: true
+                },
+                SoundBefehl::Stoppen("Muenze".into()),
+                SoundBefehl::Stoppen(String::new()),
+            ]
+        );
+        assert!(meldungen(&mut l)
+            .iter()
+            .any(|m| matches!(m, Meldung::Fehler(t) if t.contains("s.luau:6") && t.contains("Gibtsnicht"))));
     }
 
     #[test]

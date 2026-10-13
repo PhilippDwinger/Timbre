@@ -52,6 +52,10 @@ IMPORT("mouse_pressed") int32_t h_mouse_pressed(int32_t taste);
 IMPORT("ui_text") void h_ui_text(const char* k, int32_t kn, const char* t, int32_t tn, float x, float y, float groesse,
                                  float r, float g, float b, float a);
 IMPORT("ui_clear") void h_ui_clear(const char* k, int32_t kn);
+IMPORT("play_sound") int32_t h_play_sound(const char* p, int32_t n, float lautstaerke, int32_t schleife);
+IMPORT("stop_sounds") void h_stop_sounds(const char* p, int32_t n);
+// broadcast an Scripts anderer Sprachen weiterreichen. art: 0 nil, 1 bool, 2 Zahl, 3 Text, 4 Ganzzahl
+IMPORT("nachricht") void h_nachricht(const char* p, int32_t n, int32_t art, double zahl, const char* t, int32_t tn);
 }
 
 static void log_str(const std::string& s) { h_log(s.data(), (int32_t)s.size()); }
@@ -206,6 +210,20 @@ static int l_ui_clear(lua_State* L) {
     h_ui_clear(k, kn);
     return 0;
 }
+// timbre.play_sound(name [, lautstaerke [, schleife]])
+static int l_play_sound(lua_State* L) {
+    int32_t n; const char* s = str_arg(L, 1, &n);
+    float lautstaerke = (float)luaL_optnumber(L, 2, 1);
+    int32_t schleife = lua_toboolean(L, 3);
+    if (!h_play_sound(s, n, lautstaerke, schleife)) luaL_error(L, "unbekannter Sound '%s'", s);
+    return 0;
+}
+// timbre.stop_sounds([name]) – ohne Name: alle
+static int l_stop_sounds(lua_State* L) {
+    int32_t n = 0; const char* s = lua_isnoneornil(L, 1) ? "" : str_arg(L, 1, &n);
+    h_stop_sounds(s, n);
+    return 0;
+}
 static int l_broadcast(lua_State* L); // weiter unten
 
 static const luaL_Reg timbre_funktionen[] = {
@@ -217,7 +235,7 @@ static const luaL_Reg timbre_funktionen[] = {
     {"set_camera", l_set_camera}, {"set_parent", l_set_parent}, {"get_parent", l_get_parent},
     {"get_name", l_get_name}, {"set_collision", l_set_collision}, {"get_touching", l_get_touching},
     {"mouse_down", l_mouse_down}, {"mouse_pressed", l_mouse_pressed}, {"ui_text", l_ui_text}, {"ui_clear", l_ui_clear},
-    {"broadcast", l_broadcast}, {NULL, NULL},
+    {"broadcast", l_broadcast}, {"play_sound", l_play_sound}, {"stop_sounds", l_stop_sounds}, {NULL, NULL},
 };
 
 // ---------------------------------------------------------------------------
@@ -232,6 +250,15 @@ struct Script {
 
 static lua_State* L = nullptr;
 static std::vector<Script> scripts;
+static bool gestartet = false; // timbre_start lief schon (neu geladene Scripts bekommen dann sofort on_start)
+// Index des Scripts, dessen Code gerade läuft (-1 = keins). Damit gehören wartende Aufgaben
+// zu ihrem Script und enden, wenn es angehalten oder neu geladen wird.
+static int aktuell = -1;
+struct Aktuell { // setzt `aktuell` für die Dauer eines Blocks
+    int vorher;
+    explicit Aktuell(int i) : vorher(aktuell) { aktuell = i; }
+    ~Aktuell() { aktuell = vorher; }
+};
 static int geteilt_ref = 0; // Tabelle `shared` – für alle Scripts dieselbe
 
 // ---------------------------------------------------------------------------
@@ -245,6 +272,7 @@ struct Warten {
     double wann;     // Weckzeit (timbre.time())
     int nargs;       // 1 = Rückkehr aus task.wait (vergangene Zeit), 0 = Start (task.delay)
     double seit;     // für den Rückgabewert von task.wait
+    int script;      // Index in `scripts` (-1 = unbekannt)
 };
 static std::vector<Warten> wartende;
 
@@ -265,7 +293,7 @@ static int l_task_wait(lua_State* co) {
     int ref = lua_ref(co, -1);
     lua_pop(co, 1);
     double jetzt = h_zeit();
-    wartende.push_back(Warten{ref, co, jetzt + s, 1, jetzt});
+    wartende.push_back(Warten{ref, co, jetzt + s, 1, jetzt, aktuell});
     return lua_yield(co, 0);
 }
 
@@ -294,7 +322,7 @@ static int l_task_delay(lua_State* L) {
     lua_pop(L, 1);
     lua_pushvalue(L, 2);
     lua_xmove(L, co, 1);
-    wartende.push_back(Warten{ref, co, h_zeit() + s, 0, 0});
+    wartende.push_back(Warten{ref, co, h_zeit() + s, 0, 0, aktuell});
     return 0;
 }
 
@@ -315,8 +343,13 @@ static void aufgaben_wecken() {
         }
     }
     for (auto& w : faellig) {
-        if (w.nargs == 1) lua_pushnumber(w.co, jetzt - w.seit);
-        fortsetzen(w.co, w.nargs);
+        // Script inzwischen angehalten oder neu geladen? Dann endet auch seine Aufgabe.
+        bool lebt = w.script < 0 || (w.script < (int)scripts.size() && scripts[w.script].aktiv);
+        if (lebt) {
+            Aktuell a(w.script);
+            if (w.nargs == 1) lua_pushnumber(w.co, jetzt - w.seit);
+            fortsetzen(w.co, w.nargs);
+        }
         lua_unref(L, w.ref);
     }
 }
@@ -343,6 +376,7 @@ static void vm_starten() {
 // Die nargs Argumente liegen oben auf dem Stack von S und werden verbraucht. false bei Fehler.
 // S = der Lua-Stack, auf dem gerade gearbeitet wird (Haupt-State oder eine Coroutine, z. B. bei broadcast).
 static bool ereignis(lua_State* S, Script& s, const char* funktion, int nargs) {
+    Aktuell a((int)(&s - scripts.data()));
     lua_getref(S, s.umgebung);
     lua_getfield(S, -1, funktion);
     lua_remove(S, -2);
@@ -356,8 +390,19 @@ static bool ereignis(lua_State* S, Script& s, const char* funktion, int nargs) {
 
 // timbre.broadcast(nachricht [, daten]) → on_message(nachricht, daten) in allen Scripts
 static int l_broadcast(lua_State* S) {
-    luaL_checkstring(S, 1);
+    size_t n;
+    const char* nachricht = luaL_checklstring(S, 1, &n);
     int daten = lua_gettop(S) >= 2 ? 2 : 0;
+    // Erst an Scripts anderer Sprachen (über die Engine): nur einfache Daten – Tabellen kommen dort als nil an
+    int32_t art = 0; double zahl = 0; const char* t = ""; size_t tn = 0;
+    if (daten) {
+        int typ = lua_type(S, daten);
+        if (typ == LUA_TBOOLEAN) { art = 1; zahl = lua_toboolean(S, daten); }
+        else if (typ == LUA_TNUMBER) { art = 2; zahl = lua_tonumber(S, daten); }
+        else if (typ == LUA_TSTRING) { art = 3; t = lua_tolstring(S, daten, &tn); }
+    }
+    h_nachricht(nachricht, (int32_t)n, art, zahl, t, (int32_t)tn);
+    // Dann an alle Scripts dieser Sprache – sofort und mit beliebigen Daten (auch Tabellen)
     for (auto& s : scripts) {
         if (!s.aktiv) continue;
         lua_pushvalue(S, 1);
@@ -369,6 +414,7 @@ static int l_broadcast(lua_State* S) {
 
 // Ruft name() bzw. name(dt) in der Umgebung eines Scripts auf. false bei Fehler.
 static bool aufrufen(Script& s, const char* funktion, bool mit_dt, float dt) {
+    Aktuell a((int)(&s - scripts.data()));
     lua_getref(L, s.umgebung);
     lua_getfield(L, -1, funktion);
     if (!lua_isfunction(L, -1)) { lua_pop(L, 2); return true; }
@@ -388,16 +434,23 @@ extern "C" {
 EXPORT("timbre_alloc") void* timbre_alloc(int32_t n) { return malloc(n > 0 ? n : 1); }
 EXPORT("timbre_free") void timbre_free(void* p) { free(p); }
 
-// Script übersetzen und ausführen (der Code außerhalb von Funktionen läuft sofort).
-// script_id = Objekt des Scripts, eltern_id = Objekt, unter dem es hängt (0 = keins).
-// 0 = ok, 1 = Syntaxfehler, 2 = Laufzeitfehler
-EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, const char* quelle, int32_t quelle_n,
-                                            int64_t script_id, int64_t eltern_id) {
+// Gemeinsamer Teil von timbre_laden und timbre_neu_laden.
+static int32_t laden(const char* name, int32_t name_n, const char* quelle, int32_t quelle_n, int64_t script_id,
+                     int64_t eltern_id, bool alte_ersetzen) {
     vm_starten();
     std::string chunk = "=" + std::string(name, name_n);
 
     size_t bc_n = 0;
     char* bc = luau_compile(quelle, quelle_n, nullptr, &bc_n);
+    // Neu laden: Hat die neue Fassung einen Syntaxfehler, läuft die alte einfach weiter.
+    if (alte_ersetzen && bc_n > 0 && bc[0] == 0) {
+        fehler_str(std::string(bc + 1, bc_n - 1) + "  (alte Fassung läuft weiter)");
+        free(bc);
+        return 1;
+    }
+    if (alte_ersetzen)
+        for (auto& s : scripts)
+            if (s.id == script_id) s.aktiv = false;
 
     // Eigene Umgebung: liest unbekannte Namen aus den globalen Bibliotheken.
     lua_newtable(L);
@@ -424,18 +477,42 @@ EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, co
         lua_pop(L, 2);
         return 1;
     }
-    if (lua_pcall(L, 0, 0, 0) != 0) {
-        fehler_str(lua_tostring(L, -1));
-        lua_pop(L, 2);
-        return 2;
+    // Eintrag vor dem Hauptteil anlegen, damit task.delay/task.spawn im Hauptteil dem Script gehören
+    int index = (int)scripts.size();
+    scripts.push_back(Script{std::string(name, name_n), script_id, lua_ref(L, umgebung_index), false});
+    {
+        Aktuell a(index);
+        if (lua_pcall(L, 0, 0, 0) != 0) {
+            fehler_str(lua_tostring(L, -1));
+            lua_pop(L, 2);
+            return 2;
+        }
     }
-    scripts.push_back(Script{std::string(name, name_n), script_id, lua_ref(L, -1), true});
+    scripts[index].aktiv = true;
     lua_pop(L, 1);
+    if (alte_ersetzen && gestartet && !ereignis(L, scripts[index], "on_start", 0)) scripts[index].aktiv = false;
     return 0;
+}
+
+// Script übersetzen und ausführen (der Code außerhalb von Funktionen läuft sofort).
+// script_id = Objekt des Scripts, eltern_id = Objekt, unter dem es hängt (0 = keins).
+// 0 = ok, 1 = Syntaxfehler, 2 = Laufzeitfehler
+EXPORT("timbre_laden") int32_t timbre_laden(const char* name, int32_t name_n, const char* quelle, int32_t quelle_n,
+                                            int64_t script_id, int64_t eltern_id) {
+    return laden(name, name_n, quelle, quelle_n, script_id, eltern_id, false);
+}
+
+// Während des Laufens: neue Fassung eines Scripts übernehmen. Die alte Fassung (gleiche script_id)
+// wird angehalten – samt ihren wartenden Aufgaben –, die neue geladen und, falls das Spiel schon
+// läuft, ihr on_start aufgerufen. Bei Syntaxfehler läuft die alte weiter. Rückgabe wie timbre_laden.
+EXPORT("timbre_neu_laden") int32_t timbre_neu_laden(const char* name, int32_t name_n, const char* quelle,
+                                                    int32_t quelle_n, int64_t script_id, int64_t eltern_id) {
+    return laden(name, name_n, quelle, quelle_n, script_id, eltern_id, true);
 }
 
 // Ruft on_start() aller Scripts auf – jeweils als Coroutine, damit task.wait darin geht.
 EXPORT("timbre_start") void timbre_start() {
+    gestartet = true;
     for (auto& s : scripts)
         if (s.aktiv && !ereignis(L, s, "on_start", 0)) s.aktiv = false;
 }
@@ -458,6 +535,22 @@ EXPORT("timbre_beruehrung") void timbre_beruehrung(int64_t script_id, int64_t an
             lua_pushnumber(L, (double)anderes);
             ereignis(L, s, "on_touch", 1);
         }
+    }
+}
+
+// Nachricht aus einer anderen Sprache (dort per timbre.broadcast verschickt) → on_message in allen Scripts.
+// Wird hier nicht noch einmal an die Engine weitergereicht.
+EXPORT("timbre_nachricht") void timbre_nachricht(const char* p, int32_t n, int32_t art, double zahl, const char* t,
+                                                 int32_t tn) {
+    for (size_t i = 0; i < scripts.size(); i++) {
+        if (!scripts[i].aktiv) continue;
+        lua_pushlstring(L, p, n);
+        if (art == 1) lua_pushboolean(L, zahl != 0);
+        else if (art == 2) lua_pushnumber(L, zahl);
+    else if (art == 4) lua_pushnumber(L, zahl);
+        else if (art == 3) lua_pushlstring(L, t, tn);
+        else lua_pushnil(L);
+        ereignis(L, scripts[i], "on_message", 2);
     }
 }
 

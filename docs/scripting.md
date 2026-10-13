@@ -1,10 +1,13 @@
-# Scripts in Timbre (Luau)
+# Scripts in Timbre (Luau und Lua)
 
 Scripts sind **Objekte** in der Szene – wie in Roblox. Sie stehen im **Explorer**, gern unter
-dem Objekt, das sie steuern sollen. Der Quelltext liegt als Datei unter `scripts/<Name>.luau`.
+dem Objekt, das sie steuern sollen. Der Quelltext liegt als Datei unter `scripts/<Name>.luau`
+(Luau) bzw. `scripts/<Name>.lua` (Lua 5.4). Beide Sprachen können in einem Spiel gemischt werden
+und haben dieselben Funktionen (`timbre.*`, `task.*`, `on_start` …).
 
-- **Neues Script:** „+ Script“ im Explorer (landet unter dem ausgewählten Objekt) oder
-  Rechtsklick auf ein Objekt → „Script hinzufügen“.
+- **Neues Script:** „+ Script“ im Explorer (Luau, landet unter dem ausgewählten Objekt) oder
+  Rechtsklick auf ein Objekt bzw. die freie Fläche → „Script hinzufügen (Luau / Lua 5.4)“.
+- **Sprache wechseln:** Eigenschaften → Sprache (ändert die Dateiendung, der Text bleibt).
 - **Öffnen:** Doppelklick im Explorer.
 - **Eigenschaften:** Name (benennt auch die Datei um), Eltern, Aktiviert.
 - **Löschen:** Entf oder Rechtsklick → Löschen. Beim Speichern wandert die Datei nach
@@ -88,14 +91,16 @@ Objekte sind Zahlen (IDs). `print(...)` schreibt in die Konsole.
 | `timbre.get_rotation(id)` → winkel | Drehung lesen |
 | `timbre.set_scale(id, x [, y])` | Skalierung |
 | `timbre.set_velocity(id, vx, vy [, drehen])` | Bewegt sich ab jetzt von selbst (pro Sekunde) |
-| `timbre.set_sprite(id, textur, breite [, höhe, ebene])` | Bild geben; Texturen: `"blatt"`, `"jahresringe"` |
+| `timbre.set_sprite(id, textur, breite [, höhe, ebene])` | Bild geben; Texturen: `"blatt"`, `"jahresringe"` und alle Bilder des Projekts (Name wie im Explorer unter 🖼 Bilder) |
 | `timbre.set_color(id, r, g, b [, a])` | Einfärben, Werte 0–1 |
 | `timbre.get_name(id)` → text oder nil | Name eines Objekts |
 | `timbre.set_collision(id, form [, fest, verankert])` | Kollision: Form `"circle"` oder `"box"` (`nil` = entfernen); `fest=false` = nur Auslöser (meldet, blockiert nicht); `verankert=false` = wird weggeschoben. Größe = Bildgröße |
 | `timbre.get_touching(id)` → Tabelle | Alle Objekte, die das Objekt gerade berührt |
-| `timbre.broadcast(nachricht [, daten])` | Ruft `on_message(nachricht, daten)` in allen Scripts auf |
+| `timbre.broadcast(nachricht [, daten])` | Ruft `on_message(nachricht, daten)` in allen Scripts auf (auch in anderen Sprachen, siehe unten) |
 | `timbre.ui_text(schlüssel, text, x, y [, größe, r, g, b, a])` | Text über dem Spiel (x/y in Pixeln ab links oben); gleicher Schlüssel = Text ersetzen |
 | `timbre.ui_clear([schlüssel])` | Text entfernen (ohne Schlüssel: alle) |
+| `timbre.play_sound(name [, lautstärke [, schleife]])` | Sound aus `sounds/` abspielen – Name ohne Endung, z. B. `"Muenze"`. Lautstärke 1 = normal, `schleife = true` = endlos (Hintergrundmusik). Unbekannter Name = Fehler |
+| `timbre.stop_sounds([name])` | Sounds stoppen (ohne Name: alle). Bei ■ Stopp verstummt sowieso alles |
 | `timbre.mouse_down(taste)` / `timbre.mouse_pressed(taste)` → bool | Maustaste `"left"`, `"right"`, `"middle"` gedrückt / neu gedrückt (nur wenn die Maus über dem Spiel ist) |
 | `timbre.key_down(taste)` → bool | Taste gerade gedrückt |
 | `timbre.key_pressed(taste)` → bool | Taste in diesem Schritt neu gedrückt |
@@ -112,6 +117,18 @@ Koordinaten: Bei Zoom 1 ist eine Einheit ein Pixel, **y zeigt nach oben**.
 nicht umrechnen. (Im Eigenschaften-Fenster des Studios stehen dagegen die Werte relativ zum
 Eltern-Objekt.) `set_parent` hängt um, ohne dass das Objekt springt.
 
+## Live-Neuladen
+
+Während das Spiel läuft (▶), kannst du Scripts ändern und mit **Strg+S** speichern – oder sie in
+VS Code ändern und dort speichern. Das Script startet dann sofort mit der neuen Fassung neu:
+
+- Die alte Fassung wird angehalten, auch ihre wartenden `task.wait`/`task.delay`.
+- Der Hauptteil der neuen Fassung läuft, danach ihr `on_start`.
+- Objekte, die die alte Fassung erzeugt hat, **bleiben** in der Szene.
+- Hat die neue Fassung einen Syntaxfehler, läuft die alte einfach weiter.
+
+Bei ■ Stopp wird wie immer alles zurückgesetzt.
+
 ## Kollisionen
 
 Objekte mit Bild bekommen im Studio unter **Eigenschaften → + Kollision** (oder per
@@ -125,3 +142,18 @@ Beispiel: das Sammelspiel im Beispielprojekt (`Sammelspiel` + `Steuerung` unter 
 
 Luau ist die Lua-Variante von Roblox: `+=`, `-=`, `continue`, Typangaben (`local x: number`),
 Strings mit `` `Wert: {x}` ``. Doku: https://luau.org
+
+## Lua 5.4
+
+Das „normale“ Lua, wie es außerhalb von Roblox verwendet wird. Fast alles ist wie in Luau,
+aber es fehlen: `+=`/`-=` (schreibe `x = x + 1`), `continue`, Typangaben und `` `Text {x}` ``
+(nimm `string.format("Punkte: %d", x)` oder `"Punkte: " .. x`). Dafür gibt es echte Ganzzahlen
+(`math.type(3)` → `"integer"`) und `//` für ganzzahlige Division. Doku: https://www.lua.org/manual/5.4/
+
+Gesperrt (wie in Luau): `io`, `os`, `require`, `dofile`, `loadfile`, `debug` – Scripts kommen nicht an Dateien.
+
+**Zwischen den Sprachen:** Objekte, Kollisionen, `on_touch`, Texte und Sounds teilen sich alle Scripts.
+`timbre.broadcast` erreicht auch Scripts der anderen Sprache – dort aber nur mit einfachen Daten
+(`nil`, `true`/`false`, Zahl, Text; eine Tabelle kommt als `nil` an) und erst direkt nach dem
+aktuellen Aufruf statt sofort. `shared` gilt nur innerhalb einer Sprache.
+Beispiel: `Zeit.lua` (Lua) hört auf die Nachricht `"gesammelt"` aus `Steuerung.luau` (Luau).

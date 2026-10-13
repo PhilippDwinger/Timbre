@@ -21,6 +21,9 @@ Der allererste Build dauert einige Minuten (Grafik, Scripting und Oberfläche we
 | Explorer: Doppelklick | Script öffnen / Kamera zum Objekt |
 | Explorer: Rechtsklick | Script hinzufügen, Duplizieren, Löschen |
 | Konsole: Fehler anklicken | Springt im Script zur Fehlerzeile |
+| Script-Editor: tippen | **Autovervollständigung** – z. B. nach `timbre.` alle Engine-Funktionen. Pfeiltasten wählen, **Tab**/**Enter** übernehmen, **Esc** schließt, **Strg+Leertaste** öffnet die Liste von Hand |
+| **Strg+S** während das Spiel läuft | **Live-Neuladen**: geänderte Scripts übernehmen sofort ihre neue Fassung (ihr `on_start` läuft neu), ohne ■ Stopp |
+| Script in VS Code ändern und speichern | Studio übernimmt die Änderung automatisch (läuft das Spiel: sofort neu geladen) |
 | **Gitter** (oben) | Gitter anzeigen; Verschieben, Drehen (15°) und Skalieren rasten ein – **Alt** gedrückt = frei |
 | Griffe am ausgewählten Objekt | Ecken = skalieren, Kreis oben = drehen |
 | Linke Maus (Szene) | Objekt auswählen und verschieben |
@@ -28,6 +31,9 @@ Der allererste Build dauert einige Minuten (Grafik, Scripting und Oberfläche we
 | Mausrad | Zoomen |
 | WASD | Ansicht schieben (im Bearbeiten-Modus) |
 | Entf | Ausgewähltes Objekt löschen |
+| **PNG ins Fenster ziehen** | Wird zum Bild (`texturen/<name>.tbr` im Projekt) und landet als Objekt mitten in der Szene |
+| **WAV / OGG / MP3 / FLAC ins Fenster ziehen** | Wird zum Sound (`sounds/` im Projekt), im Script: `timbre.play_sound("Name")` |
+| Explorer: **🖼 Bilder** / **🔊 Sounds** | Alle Bilder (klicken = in die Szene setzen) und Sounds (▶ = anhören) des Projekts |
 
 Scripts schreiben: siehe `docs/scripting.md`.
 

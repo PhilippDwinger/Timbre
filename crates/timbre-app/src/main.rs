@@ -5,6 +5,7 @@ mod luau_farben;
 mod oberflaeche;
 mod projekt;
 mod studio;
+mod vervollstaendigung;
 
 use std::sync::Arc;
 
@@ -93,6 +94,7 @@ impl App {
 
         // 1. Oberfläche (Knöpfe, Klicks in die Szene, Script-Editor …)
         let mut ausgabe = ober.ausfuehren(window, |ui| studio.ui(ui));
+        studio.importieren(renderer); // ins Fenster gezogene Dateien (PNG, Sounds)
         ober.texturen_aktualisieren(renderer, &mut ausgabe);
         let tastatur_frei = !ober.ctx.egui_wants_keyboard_input();
 

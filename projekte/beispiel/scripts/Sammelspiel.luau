@@ -5,6 +5,7 @@
 --   * "Steuerung" (unter dem Spieler) merkt per on_touch, wenn der Spieler ein Goldstück
 --     berührt, und meldet es mit timbre.broadcast("gesammelt")
 --   * task.wait / task.delay für Zeitabläufe, timbre.ui_text für die Anzeige
+--   * timbre.play_sound spielt Sounds aus dem Ordner sounds/ (Name ohne Endung)
 
 local ANZAHL = 8
 local BEREICH = 700
@@ -42,7 +43,9 @@ function on_message(nachricht)
 	end
 	punkte += 1
 	anzeigen()
+	timbre.play_sound("Muenze", 0.7)
 	if punkte % 5 == 0 then
+		timbre.play_sound("Jubel", 0.6)
 		timbre.ui_text("lob", "Super!", 16, 48, 24, 0.55, 1, 0.5)
 		task.delay(1.5, function()
 			timbre.ui_clear("lob")

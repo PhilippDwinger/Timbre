@@ -18,7 +18,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - **Scripting:** Jede Sprache ist ein **WASM-Gast**.
   - **Geändert in M5 (begründet):** Gäste sind **Core-Module mit schmaler C-ABI** (`docs/scripting-abi.md`) statt Component Model – ein Host-Code für nativ und Browser, keine Adapter/jco nötig, winzige Schnittstelle. `wit/timbre.wit` bleibt die sprachneutrale Beschreibung derselben Funktionen und muss mit der ABI synchron bleiben.
   - Nativ: wasmtime (mit `wasm_exceptions` + Fuel gegen Endlosschleifen). Web: Browser-WebAssembly (M8).
-  - Lua / Luau: Interpreter als WASM-Gast (`assets/scripting/luau.wasm`, gebaut mit `tools/luau-gast/bauen.sh` via zig; nutzt WebAssembly-Exceptions/exnref), lädt Script-Quelltext zur Laufzeit.
+  - Lua / Luau: Interpreter als WASM-Gast (`assets/scripting/luau.wasm` bzw. `lua.wasm`, gebaut mit `tools/luau-gast/bauen.sh` bzw. `tools/lua-gast/bauen.sh` via zig; nutzen WebAssembly-Exceptions/exnref), laden Script-Quelltext zur Laufzeit. Sprache = Dateiendung (`.luau` / `.lua`, `projekt::Sprache`).
+  - **Mehrere Sprachen gleichzeitig:** pro Sprache ein `ScriptMotor` (Hintergrund-Übersetzung) und beim ▶ eine `ScriptLaufzeit` (`Studio::laufzeiten`). Physik einmal pro Schritt, `beruehrungen_melden` an jede Laufzeit. `broadcast` geht über den Host auch an andere Sprachen (Import `nachricht` → `Kontext::ausgehend` → `Studio::nachrichten_verteilen` → Export `timbre_nachricht`; nur einfache Daten, max. 8 Runden pro Schritt). `shared` bleibt pro Sprache.
   - Script-API ist englisch (`timbre.spawn`, `timbre.set_position` …), Engine-Code deutsch. Doku für Nutzer: `docs/scripting.md`.
   - Python: componentize-py (groß → lazy laden).
   - Java: TeaVM → WASM; ggf. dünner Adapter nötig (Component-Model-Tooling für Java noch unreif).
@@ -33,14 +34,16 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - **Luau-Gast-Laufzeit:** `on_start`, `on_touch`, `on_message` laufen als Coroutinen (dürfen `task.wait`), `on_update` per pcall (kein Warten). Achtung im Gast-C++: immer auf dem Stack des übergebenen `lua_State` arbeiten (Coroutinen!), nicht auf dem globalen `L`.
 - **Rückgängig** = Schnappschüsse des Szenen-JSON (max. 100), gemerkt nach abgeschlossener Änderung (`markieren()` an jeder Änderungsstelle im Studio aufrufen!).
 - **Reihenfolge:** Paddy will erst die Engine verbessern, dann weitere Sprachen.
+- **Projekt-Assets:** Texturen liegen als `.tbr` in `<projekt>/texturen/` (PNG per Drag & Drop → wird dort angelegt), Sounds als normale Dateien (WAV/OGG/MP3/FLAC) in `<projekt>/sounds/`. Sounds bekommen **kein** `.tbr`-Format (kein Mehrwert, Audiodateien sind schon Standard); Scripts spielen sie per Name ohne Endung. Audio nativ über **rodio 0.23** (`timbre-core/src/audio.rs`, kein Audiogerät = stumm, kein Fehler); Browser später WebAudio (M8).
 - **Assets:** eigenes Format `.tbr` (Mesh, Textur, Szene). Assets liegen lokal bzw. später auf Paddys Homeserver – **nicht** in Supabase. Supabase höchstens für Metadaten/Login (Grove-Auth).
 
 ## Aufbau des Repos
 - `crates/timbre-tbr` – `.tbr` lesen/schreiben, **ohne Abhängigkeiten** (auch für Werkzeuge, Grove, Bridge). Spezifikation: `docs/tbr-format.md`.
 - `crates/timbre-core` – Engine: Renderer, Zeit, Input, Kamera, ECS-Welt (`welt.rs`), Assets (`assets.rs`), Szenen (`szene.rs`); später Scripting-Host.
-- `crates/timbre-app` – **Timbre Studio** (Editor): `studio.rs` (Modi, Panels, Ausführen/Stopp), `projekt.rs` (Projektordner), `oberflaeche.rs` (egui ↔ winit/wgpu), `luau_farben.rs` (Syntaxfarben).
-- `projekte/beispiel` – Beispielprojekt: `szene.tbr` + `scripts/*.luau`. Studio startet standardmäßig damit (`cargo run -p timbre-app -- <ordner>` für andere).
+- `crates/timbre-app` – **Timbre Studio** (Editor): `studio.rs` (Modi, Panels, Ausführen/Stopp), `projekt.rs` (Projektordner), `oberflaeche.rs` (egui ↔ winit/wgpu), `luau_farben.rs` (Syntaxfarben), `vervollstaendigung.rs` (Autovervollständigung).
+- `projekte/beispiel` – Beispielprojekt: `szene.tbr` + `scripts/*.luau` + `sounds/*.wav` (+ `texturen/*.tbr`, sobald etwas importiert wird). Studio startet standardmäßig damit (`cargo run -p timbre-app -- <ordner>` für andere).
 - `tools/luau-gast` – Luau → WebAssembly (nur bei Luau-/Gast-Änderungen nötig, Ergebnis liegt im Repo).
+- `tools/lua-gast` – Lua 5.4 → WebAssembly, gleiche Logik wie der Luau-Gast (Änderungen an der Script-API immer in **beiden** `gast.cpp` nachziehen und beide neu bauen).
 - `crates/tbr` – Kommandozeilen-Werkzeug: `tbr info`, `tbr textur` (PNG), `tbr mesh` (glTF/GLB).
 - `assets/quellen` – Ausgangsdateien (PNG, glTF); `assets/texturen`, später `assets/meshes` – fertige `.tbr`.
 
@@ -57,7 +60,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
 2. [x] Fixed-Timestep Game Loop, Input, Kamera, Sprite-Rendering mit Batching
 3. [x] Asset-Format `.tbr` v0 (Mesh, Textur, Szene) – wichtigste Entscheidung, alles baut darauf auf
 4. [x] ECS
-5. [~] WASM-Scripting-Host (wasmtime) + erste Sprache: **Luau**, dann **Lua** – dazu Timbre Studio (Editor)
+5. [~] WASM-Scripting-Host (wasmtime) + erste Sprache: **Luau**, dann **Lua** – dazu Timbre Studio (Editor) – alles gebaut, Pakete 2–4 + Lua warten auf Paddys Validierung
 6. [ ] **Python**, dann **Java**
 7. [ ] Bonus-Sprachen (Rust, C#, JS … zuerst die einfachen)
 8. [ ] Web-Build in Grove einbetten
@@ -114,3 +117,27 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - Script-API: `on_touch`, `on_message`, `timbre.broadcast`, `shared`, `task.wait/delay/spawn`, `get_name`, `set_collision`, `get_touching`, `mouse_down/pressed` (nur über dem Spielbereich), `ui_text/ui_clear` (Bildschirmtexte, im Studio über der Szene gezeichnet).
   - Editor: Gitter (Größe einstellbar) mit Einrasten (Alt = frei), gedrehter Auswahlrahmen, Griffe zum Skalieren (Ecken) und Drehen (Kreis), Einrasten 15° / 0,05.
   - Beispielprojekt: Sammelspiel (`Sammelspiel.luau` + `on_touch` in `Steuerung.luau`), Baumstümpfe blockieren, Spieler hat Kollision.
+- Paket 3 „Bilder & Sounds“ gebaut (in Claudes Testumgebung geprüft: PNG + WAV importiert, gespeichert, neu geladen, Spiel mit Sounds gestartet; Ton selbst nur gegen ein Null-Audiogerät getestet; wartet zusammen mit Paket 2 auf Validierung):
+  - Drag & Drop ins Studio-Fenster (egui `raw.dropped_files`, abgearbeitet in `Studio::importieren` nach der Oberfläche, weil Texturen den Renderer brauchen). Beim Ziehen dunkler Hinweis über dem Fenster.
+  - PNG → `texturen/<name>.tbr` (Name = Dateiname, bei Gleichheit `name2` …), sofort geladen, Objekt mitten in der Ansicht (max. 256 px an der längsten Seite). Projekt-Texturen werden beim Start vor der Szene geladen.
+  - Sounds → Kopie nach `sounds/`, einmal angespielt. Explorer: aufklappbare Bereiche **🖼 Bilder** (klicken = Objekt setzen) und **🔊 Sounds** (▶ anhören, ■ alle stoppen).
+  - Script-API: `timbre.play_sound(name [, lautstärke [, schleife]])`, `timbre.stop_sounds([name])`. ABI: neue Importe `play_sound`, `stop_sounds` (WIT nachgezogen); Host sammelt Befehle im Kontext (`SoundBefehl`), Studio spielt sie in `meldungen_uebernehmen` ab; ■ stoppt alle Sounds. `luau.wasm` neu gebaut (zig 0.17 über pip `ziglang`). Test `sounds_werden_angefordert`.
+  - `assets::png_lesen` (Kern, `png`-Crate), `Assets::pixel_groesse`.
+  - Beispielprojekt: `sounds/Muenze.wav`, `sounds/Jubel.wav` (von Claude synthetisiert) – Sammelspiel spielt sie beim Einsammeln bzw. alle 5 Goldstücke.
+- Paket 4 „Komfort beim Scripten“ gebaut (in Claudes Testumgebung geprüft: Vorschläge getippt/übernommen, Script während des Laufens von außen geändert → neu geladen; wartet auf Validierung):
+  - **Live-Neuladen:** Strg+S im laufenden Spiel → `ScriptLaufzeit::script_neu_laden` → Gast-Export `timbre_neu_laden` (optional in der ABI). Alte Fassung (gleiche script_id) wird angehalten, neue geladen, `on_start` läuft sofort. Syntaxfehler → alte läuft weiter. Objekte der alten Fassung bleiben.
+  - Gast merkt sich jetzt, welchem Script eine wartende Aufgabe gehört (`aktuell`, `Warten.script`): Aufgaben angehaltener Scripts enden (vorher liefen sie nach `timbre_script_stoppen` weiter – Bug behoben).
+  - **Änderungen von außen** (VS Code): Studio vergleicht jede Sekunde die Script-Dateien mit dem gespeicherten Stand (`platte_abgleichen`). Unverändert im Studio → übernehmen (+ live neu laden); auch im Studio geändert → einmaliger Konflikt-Hinweis, Studio-Fassung gewinnt beim Speichern.
+  - **Autovervollständigung** (`vervollstaendigung.rs`): nach `timbre.`/`task.`/`math.`/`string.`/`table.`/`script.` deren Funktionen mit Signatur; sonst Schlüsselwörter, Ereignisse, globale Funktionen, Namen aus dem Script. Nicht in Kommentaren/Strings. Tasten werden vor dem TextEdit per `consume_key` abgefangen; Funktionen bekommen `()` (Cursor in die Klammern). Strg+Leertaste öffnet von Hand. 4 Tests.
+- **Lua 5.4** als zweite Sprache gebaut (in Claudes Testumgebung geprüft: `Zeit.lua` läuft neben den Luau-Scripts, Sprache eines Scripts per Eigenschaften umgestellt, gespeichert, wieder gestartet; wartet auf Validierung):
+  - `tools/lua-gast/gast.cpp` = Luau-Gast mit Lua-5.4-API (`luaL_loadbuffer` + `_ENV`-Upvalue statt `luau_load`, `luaL_ref`, `lua_resume` mit 4 Argumenten, IDs als `lua_Integer`). Ohne io/os/package/debug, `dofile`/`loadfile`/`collectgarbage` entfernt. Lua-Quellen: Crate `lua-src` 548.1.1 (Lua 5.4.8), C mit `-D_WASI_EMULATED_SIGNAL`, Gast mit `-fno-exceptions`. 286 KB.
+  - Host: zusätzliche WASI-Stubs (`fd_fdstat_set_flags`, `fd_read`, `fd_renumber`, `fd_prestat_*`, `path_open`, `proc_exit`), die Lua über stdio mitbringt. 3 Lua-Tests.
+  - Studio: `Sprache`-Enum (Endung, Name, Vorlage), Explorer-Menüs „Script hinzufügen (Luau / Lua 5.4)“, Eigenschaften → Sprache wechseln (benennt Datei um), mehrere Laufzeiten, Live-Neuladen pro Sprache, Autovervollständigung ohne `continue`/`typeof` in Lua.
+  - Beispielprojekt: `scripts/Zeit.lua` (Spielzeit-Anzeige) als Script-Objekt in `szene.tbr`.
+  - Browser-Build nicht geprüft (wasm32-Target hier nicht installierbar); die neuen Teile sind sauber hinter `cfg(not(wasm32))`.
+- Danach (Paddy unterwegs, „mach weiter“) gebaut, wartet ebenfalls auf Validierung:
+  - **Autovervollständigung erweitert:** Vorschläge **in Texten** – Sounds (`play_sound("`), Bilder (`set_sprite(id, "`), Objekte (`find("`, Vergleiche `== "`), Tasten (`key_down("`), Maustasten, Kollisionsformen, Nachrichten (aus allen `broadcast("…")` im Projekt). Übernehmen ergänzt das schließende `"`. **Signatur-Hinweis** über dem Cursor, solange er in den Klammern einer bekannten Funktion steht (mit Argument-Nummer). `Projektnamen` baut das Studio nur, wenn der Editor Fokus hat. 7 Tests.
+  - **`broadcast` über Sprachgrenzen** (siehe Architektur). Beide Gäste neu gebaut. WIT v0.5 (`simple-value`). Test `nachrichten_zwischen_sprachen`. Beispiel: `Zeit.lua` zeigt „letztes Goldstück bei …“ nach der Luau-Nachricht `gesammelt`.
+  - Nächste Schritte: Paddy validiert → Meilenstein 5 abhaken. Danach Meilenstein 6: **Python** – Entscheidung offen (siehe unten), dann Java.
+  - **Offene Entscheidung Python:** Plan war componentize-py (Component Model, groß). Passt nicht mehr zur Core-Modul-ABI aus M5. Vorschlag Claude: CPython selbst als WASI-Gast mit derselben schmalen ABI (echtes Python 3, ~5–10 MB, lazy laden) statt componentize-py; Alternative: kleiner Interpreter (PocketPy/MicroPython, < 1 MB, aber nur Python-Teilmenge). Paddy fragen.
+

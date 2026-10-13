@@ -1,6 +1,8 @@
 //! Timbre-Kern: Renderer, ECS (Welt), Assets, Szenen – später der Scripting-Host.
 
 pub mod assets;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod audio;
 pub mod input;
 pub mod kamera;
 pub mod physik;

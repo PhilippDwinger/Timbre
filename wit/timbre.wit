@@ -1,12 +1,21 @@
-// Timbre Script-Schnittstelle – v0.4 (Paket 2: Kollisionen, Ereignisse, Bildschirmtext)
+// Timbre Script-Schnittstelle – v0.5 (Sounds, Nachrichten zwischen Sprachen)
 //
 // Beschreibung der Funktionen, die Scripts in jeder Sprache bekommen.
 // Technisch sind die Gäste derzeit einfache WebAssembly-Core-Module mit schmaler
 // C-Schnittstelle (siehe docs/scripting-abi.md) – diese Datei ist die sprachneutrale
 // Beschreibung derselben Funktionen.
-package timbre:engine@0.4.0;
+package timbre:engine@0.5.0;
 
 interface host {
+    /// Daten, die eine Nachricht zwischen Sprachen tragen kann.
+    variant simple-value {
+        none,
+        boolean(bool),
+        number(f64),
+        integer(s64),
+        text(string),
+    }
+
     /// Ausgabe in die Konsole.
     log: func(message: string);
     /// Sekunden seit ▶.
@@ -56,6 +65,14 @@ interface host {
     /// Text über dem Spiel
     ui-text: func(key: string, text: string, x: f32, y: f32, size: f32, r: f32, g: f32, b: f32, a: f32);
     ui-clear: func(key: option<string>);
+
+    /// Sound aus dem Ordner `sounds/` abspielen (Name ohne Endung). false = unbekannter Sound.
+    play-sound: func(name: string, volume: f32, looped: bool) -> bool;
+    /// Nachricht an alle Scripts (auch anderer Sprachen). Über Sprachgrenzen nur einfache Daten.
+    broadcast: func(message: string, data: simple-value);
+
+    /// Laufende Sounds stoppen – ohne Name: alle.
+    stop-sounds: func(name: option<string>);
 }
 
 /// Ein Script: bekommt Engine-Funktionen, liefert Lebenszyklus-Callbacks.
@@ -75,7 +92,7 @@ world script {
     export on-touch: func(other: u64);
 
     /// Nachricht von timbre.broadcast.
-    export on-message: func(message: string, data: option<string>);
+    export on-message: func(message: string, data: simple-value);
 
     // Dazu in jeder Sprache: task.wait / task.delay / task.spawn und eine gemeinsame Tabelle `shared`.
 }

@@ -21,22 +21,26 @@ use timbre_core::{
 };
 
 use crate::luau_farben;
-use crate::projekt::{self, ProjektInhalt};
+use crate::projekt::{self, ProjektInhalt, Sprache};
+use crate::vervollstaendigung;
 
 #[cfg(not(target_arch = "wasm32"))]
-use timbre_core::scripting::{BildschirmText, Meldung, ScriptLaufzeit, ScriptMotor};
+use timbre_core::audio::Audio;
+#[cfg(not(target_arch = "wasm32"))]
+use timbre_core::scripting::{BildschirmText, Meldung, ScriptLaufzeit, ScriptMotor, SoundBefehl};
 
-/// Texturen sind vorerst eingebaut (später: Asset-Ordner des Projekts).
+/// Eingebaute Texturen – dazu kommen die des Projekts (`texturen/*.tbr`).
 const TEXTUREN: [&[u8]; 2] = [
     include_bytes!("../../../assets/texturen/jahresringe.tbr"),
     include_bytes!("../../../assets/texturen/blatt.tbr"),
 ];
 
-/// Der Luau-Interpreter als WebAssembly-Modul (gebaut mit tools/luau-gast/bauen.sh).
+/// Die Script-Sprachen als WebAssembly-Module (gebaut mit tools/luau-gast/bauen.sh bzw. tools/lua-gast/bauen.sh).
 #[cfg(not(target_arch = "wasm32"))]
 const LUAU_GAST: &[u8] = include_bytes!("../../../assets/scripting/luau.wasm");
+#[cfg(not(target_arch = "wasm32"))]
+const LUA_GAST: &[u8] = include_bytes!("../../../assets/scripting/lua.wasm");
 
-const NEUES_SCRIPT: &str = "-- Neues Script\n-- script.parent = das Objekt, unter dem dieses Script hängt (oder nil)\n\nfunction on_start()\n\tprint(\"Hallo aus\", script.name)\nend\n\nfunction on_update(dt)\n\nend\n";
 const MAX_KONSOLE: usize = 2000;
 /// So viele Schritte kann man rückgängig machen.
 const MAX_VERLAUF: usize = 100;
@@ -83,7 +87,7 @@ impl Puffer {
 enum Aktion {
     Auswaehlen(Objekt),
     Oeffnen(Objekt),
-    ScriptHinzufuegen(Option<Objekt>),
+    ScriptHinzufuegen(Option<Objekt>, Sprache),
     Duplizieren(Objekt),
     Loeschen(Objekt),
     ZiehenBeginnen(Objekt),
@@ -106,7 +110,7 @@ struct Griff {
     start: Transform,
 }
 
-/// Das Übersetzen des Luau-Moduls dauert einen Moment – passiert im Hintergrund.
+/// Das Übersetzen eines Sprach-Moduls dauert einen Moment – passiert im Hintergrund.
 #[cfg(not(target_arch = "wasm32"))]
 enum Motor {
     Laedt(std::sync::mpsc::Receiver<Result<ScriptMotor, String>>),
@@ -129,10 +133,12 @@ pub struct Studio {
     modus: Modus,
     schnappschuss: Option<tbr::Szene>,
     kamera_vor_start: Kamera2d,
+    /// Ein übersetztes Gast-Modul pro Sprache
     #[cfg(not(target_arch = "wasm32"))]
-    motor: Motor,
+    motoren: HashMap<Sprache, Motor>,
+    /// Laufende Scripts: eine Laufzeit pro Sprache, die in der Szene vorkommt
     #[cfg(not(target_arch = "wasm32"))]
-    laufzeit: Option<ScriptLaufzeit>,
+    laufzeiten: Vec<(Sprache, ScriptLaufzeit)>,
     konsole: Vec<Zeile>,
     kamera: Kamera2d,
     kamera_vorher: Kamera2d,
@@ -168,6 +174,16 @@ pub struct Studio {
     /// Texte, die Scripts auf den Bildschirm schreiben (`timbre.ui_text`)
     #[cfg(not(target_arch = "wasm32"))]
     texte: std::collections::BTreeMap<String, BildschirmText>,
+    /// Ins Fenster gezogene Dateien, die noch importiert werden müssen (braucht den Renderer)
+    importe: Vec<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
+    audio: Audio,
+    /// Wann zuletzt nachgesehen wurde, ob Scripts außerhalb (z. B. in VS Code) geändert wurden
+    platte_geprueft: web_time::Instant,
+    /// Script-Datei → Inhalt auf der Platte, für den schon ein Konflikt gemeldet wurde
+    konflikte: HashMap<String, String>,
+    /// Autovervollständigung im Script-Editor (offen, wenn `Some`)
+    vorschlag: Option<vervollstaendigung::Offen>,
 }
 
 impl Studio {
@@ -184,6 +200,9 @@ impl Studio {
         #[cfg(target_arch = "wasm32")]
         let geladen: Result<ProjektInhalt, String> = Ok(projekt::eingebaut());
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let (audio, audio_fehler) = Audio::neu();
+
         let mut studio = Self {
             projekt_name: String::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -198,9 +217,9 @@ impl Studio {
             schnappschuss: None,
             kamera_vor_start: Kamera2d::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            motor: motor_im_hintergrund(),
+            motoren: Sprache::ALLE.iter().map(|&s| (s, motor_im_hintergrund(s))).collect(),
             #[cfg(not(target_arch = "wasm32"))]
-            laufzeit: None,
+            laufzeiten: Vec::new(),
             konsole: Vec::new(),
             kamera: Kamera2d::default(),
             kamera_vorher: Kamera2d::default(),
@@ -224,18 +243,40 @@ impl Studio {
             maus_ueber_szene: false,
             #[cfg(not(target_arch = "wasm32"))]
             texte: Default::default(),
+            importe: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            audio,
+            platte_geprueft: web_time::Instant::now(),
+            konflikte: HashMap::new(),
+            vorschlag: None,
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(e) = audio_fehler {
+            studio.melden(Art::System, e);
+        }
 
         match geladen {
-            Ok(inhalt) => studio.projekt_uebernehmen(inhalt),
+            Ok(inhalt) => studio.projekt_uebernehmen(renderer, inhalt),
             Err(e) => studio.melden(Art::Fehler, e),
         }
         studio.stand = studio.welt_text();
         studio
     }
 
-    fn projekt_uebernehmen(&mut self, inhalt: ProjektInhalt) {
+    fn projekt_uebernehmen(&mut self, renderer: &mut Renderer, inhalt: ProjektInhalt) {
         self.projekt_name = inhalt.name;
+        // Texturen zuerst – die Szene verweist darauf
+        for (datei, daten) in &inhalt.texturen {
+            if let Err(e) = self.assets.textur_laden(renderer, daten) {
+                self.melden(Art::Fehler, format!("texturen/{datei}: {e}"));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for (name, daten) in inhalt.sounds {
+            if let Err(e) = self.audio.sound_setzen(&name, daten) {
+                self.melden(Art::Fehler, e);
+            }
+        }
         for s in inhalt.scripts {
             self.puffer.insert(
                 s.name,
@@ -261,7 +302,7 @@ impl Studio {
             .collect();
         ohne_objekt.sort();
         for datei in &ohne_objekt {
-            let name = datei.trim_end_matches(".luau").to_string();
+            let name = projekt::ohne_script_endung(datei).to_string();
             self.welt.spawn((
                 Name(name),
                 Script {
@@ -303,10 +344,55 @@ impl Studio {
         }
     }
 
+    /// `timbre.broadcast` über Sprachgrenzen: Nachrichten jeder Laufzeit an alle anderen zustellen.
+    /// Antworten werden in weiteren Runden verteilt (höchstens 8, gegen endloses Hin und Her).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn nachrichten_verteilen(&mut self) {
+        for _ in 0..8 {
+            let mut post: Vec<(usize, Vec<timbre_core::scripting::Nachricht>)> = Vec::new();
+            for (i, (_, lz)) in self.laufzeiten.iter_mut().enumerate() {
+                let n = std::mem::take(&mut lz.kontext().ausgehend);
+                if !n.is_empty() {
+                    post.push((i, n));
+                }
+            }
+            if post.is_empty() || self.laufzeiten.len() < 2 {
+                return;
+            }
+            for (von, nachrichten) in post {
+                for (i, (_, lz)) in self.laufzeiten.iter_mut().enumerate() {
+                    if i != von && !lz.abgestuerzt() {
+                        for n in &nachrichten {
+                            lz.nachricht_zustellen(&mut self.welt, n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn meldungen_uebernehmen(&mut self) {
-        let Some(lz) = self.laufzeit.as_mut() else { return };
-        let meldungen = std::mem::take(&mut lz.kontext().meldungen);
+        self.nachrichten_verteilen();
+        let mut meldungen = Vec::new();
+        for (_, lz) in self.laufzeiten.iter_mut() {
+            // Sound-Wünsche der Scripts ausführen
+            for b in std::mem::take(&mut lz.kontext().sound_befehle) {
+                match b {
+                    SoundBefehl::Abspielen {
+                        name,
+                        lautstaerke,
+                        schleife,
+                    } => {
+                        if let Err(e) = self.audio.abspielen(&name, lautstaerke, schleife) {
+                            lz.kontext().meldungen.push(Meldung::Fehler(e));
+                        }
+                    }
+                    SoundBefehl::Stoppen(name) => self.audio.stoppen(&name),
+                }
+            }
+            meldungen.append(&mut lz.kontext().meldungen);
+        }
         for m in meldungen {
             match m {
                 Meldung::Info(t) => self.melden(Art::Info, t),
@@ -431,7 +517,7 @@ impl Studio {
     }
 
     /// Freier Dateiname aus einem Objektnamen: „Mein Script!“ → „Mein_Script.luau“
-    fn freie_datei(&self, name: &str, ausser: Option<&str>) -> String {
+    fn freie_datei(&self, name: &str, ausser: Option<&str>, sprache: Sprache) -> String {
         let mut basis: String = name
             .chars()
             .map(|c| {
@@ -448,10 +534,11 @@ impl Studio {
             basis = "Script".into();
         }
         let belegt = |d: &str| Some(d) != ausser && (self.puffer.contains_key(d) || self.script_objekt(d).is_some());
-        let mut datei = format!("{basis}.luau");
+        let endung = sprache.endung();
+        let mut datei = format!("{basis}.{endung}");
         let mut n = 2;
         while belegt(&datei) {
-            datei = format!("{basis}{n}.luau");
+            datei = format!("{basis}{n}.{endung}");
             n += 1;
         }
         datei
@@ -482,7 +569,7 @@ impl Studio {
         self.tab = Tab::Script(datei.to_string());
     }
 
-    fn script_anlegen(&mut self, eltern: Option<Objekt>) {
+    fn script_anlegen(&mut self, eltern: Option<Objekt>, sprache: Sprache) {
         // Scripts hängen nicht unter Scripts – dann unter dessen Eltern.
         let eltern = eltern.and_then(|e| {
             if self.welt.get::<&Script>(e).is_ok() {
@@ -492,16 +579,16 @@ impl Studio {
             }
         });
         self.markieren();
-        let datei = self.freie_datei("Script", None);
+        let datei = self.freie_datei("Script", None, sprache);
         self.puffer.insert(
             datei.clone(),
             Puffer {
-                text: NEUES_SCRIPT.into(),
+                text: sprache.vorlage().into(),
                 gespeichert: None,
             },
         );
         let o = self.welt.spawn((
-            Name(datei.trim_end_matches(".luau").into()),
+            Name(projekt::ohne_script_endung(&datei).into()),
             Script {
                 datei: datei.clone(),
                 aktiv: true,
@@ -521,12 +608,27 @@ impl Studio {
         let Ok(alt) = self.welt.get::<&Script>(o).map(|s| s.datei.clone()) else {
             return;
         };
-        let neu = self.freie_datei(&name, Some(&alt));
+        let sprache = Sprache::aus_datei(&alt).unwrap_or(Sprache::Luau);
+        self.script_datei_wechseln(o, &alt, self.freie_datei(&name, Some(&alt), sprache));
+    }
+
+    /// Sprache eines Scripts wechseln (= andere Dateiendung). Der Text bleibt, wie er ist.
+    fn sprache_wechseln(&mut self, o: Objekt, sprache: Sprache) {
+        let Ok(alt) = self.welt.get::<&Script>(o).map(|s| s.datei.clone()) else {
+            return;
+        };
+        self.markieren();
+        let neu = self.freie_datei(projekt::ohne_script_endung(&alt), Some(&alt), sprache);
+        self.script_datei_wechseln(o, &alt, neu);
+    }
+
+    /// Script-Objekt zeigt ab jetzt auf die Datei `neu` (wird beim Speichern geschrieben).
+    fn script_datei_wechseln(&mut self, o: Objekt, alt: &str, neu: String) {
         if neu == alt {
             return;
         }
         // Alten Puffer behalten – Rückgängig kann wieder auf den alten Namen zeigen.
-        let text = self.puffer.get(&alt).map(|p| p.text.clone()).unwrap_or_default();
+        let text = self.puffer.get(alt).map(|p| p.text.clone()).unwrap_or_default();
         self.puffer.insert(
             neu.clone(),
             Puffer {
@@ -542,7 +644,7 @@ impl Studio {
                 *d = neu.clone();
             }
         }
-        if self.tab == Tab::Script(alt) {
+        if self.tab == Tab::Script(alt.to_string()) {
             self.tab = Tab::Script(neu);
         }
     }
@@ -571,7 +673,8 @@ impl Studio {
                 b.add(*x);
             }
             if let Ok(s) = self.welt.get::<&Script>(alt).map(|s| (*s).clone()) {
-                let datei = self.freie_datei(s.datei.trim_end_matches(".luau"), None);
+                let sprache = Sprache::aus_datei(&s.datei).unwrap_or(Sprache::Luau);
+                let datei = self.freie_datei(projekt::ohne_script_endung(&s.datei), None, sprache);
                 let text = self.puffer.get(&s.datei).map(|p| p.text.clone()).unwrap_or_default();
                 self.puffer.insert(
                     datei.clone(),
@@ -623,17 +726,123 @@ impl Studio {
         bester.map(|(_, o)| o)
     }
 
-    fn objekt_anlegen(&mut self, name: &str, textur_name: &str, groesse: f32) {
-        self.markieren();
+    fn objekt_anlegen(&mut self, name: &str, textur_name: &str, groesse: Vec2) {
         let Some(&textur) = self.assets.textur_namen().get(textur_name) else {
             return;
         };
+        self.markieren();
         let o = self.welt.spawn((
             Name(name.into()),
             Transform::bei(self.kamera.position),
-            Bild::new(textur, Vec2::splat(groesse)),
+            Bild::new(textur, groesse),
         ));
         self.auswahl = Some(o);
+    }
+
+    /// Größe, in der ein Bild neu in die Szene kommt: Pixelgröße, aber höchstens 256 an der längsten Seite.
+    fn start_groesse(&self, textur: TexturId) -> Vec2 {
+        let (b, h) = self.assets.pixel_groesse(textur).unwrap_or((64, 64));
+        let g = vec2(b as f32, h as f32);
+        g * (256.0 / g.max_element()).min(1.0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Import: Dateien ins Fenster ziehen
+    // -----------------------------------------------------------------------
+
+    /// Gezogene Dateien importieren: PNG → Textur (+ Objekt in der Szene), WAV/OGG/MP3/FLAC → Sound.
+    /// Wird nach der Oberfläche aufgerufen, weil Texturen auf die Grafikkarte müssen.
+    pub fn importieren(&mut self, renderer: &mut Renderer) {
+        let dateien = std::mem::take(&mut self.importe);
+        #[cfg(not(target_arch = "wasm32"))]
+        for (i, pfad) in dateien.iter().enumerate() {
+            let endung = pfad
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            let ergebnis = if endung == "png" {
+                self.bild_importieren(renderer, pfad, i)
+            } else if timbre_core::audio::ist_sound_datei(&endung) {
+                self.sound_importieren(pfad)
+            } else {
+                Err(format!(
+                    "{}: unbekannte Dateiart – Timbre kennt PNG (Bilder) und WAV/OGG/MP3/FLAC (Sounds)",
+                    pfad.display()
+                ))
+            };
+            match ergebnis {
+                Ok(text) => self.melden(Art::System, text),
+                Err(e) => self.melden(Art::Fehler, format!("Import: {e}")),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !dateien.is_empty() {
+            let _ = renderer;
+            self.melden(Art::System, "Import geht im Browser noch nicht.");
+        }
+    }
+
+    /// Freier Name: `name`, sonst `name2`, `name3` …
+    fn freier_name(name: &str, belegt: impl Fn(&str) -> bool) -> String {
+        let mut n = 2;
+        let mut kandidat = name.to_string();
+        while belegt(&kandidat) {
+            kandidat = format!("{name}{n}");
+            n += 1;
+        }
+        kandidat
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bild_importieren(
+        &mut self,
+        renderer: &mut Renderer,
+        pfad: &std::path::Path,
+        nr: usize,
+    ) -> Result<String, String> {
+        let daten = std::fs::read(pfad).map_err(|e| format!("{}: {e}", pfad.display()))?;
+        let (breite, hoehe, pixel) =
+            timbre_core::assets::png_lesen(&daten).map_err(|e| format!("{}: {e}", pfad.display()))?;
+        let wunsch = projekt::ohne_endung(&pfad.to_string_lossy());
+        let name = Self::freier_name(&wunsch, |n| self.assets.textur_namen().contains_key(n));
+        let textur = tbr::Textur::neu(name.clone(), breite, hoehe, pixel).map_err(|e| e.to_string())?;
+        let datei = projekt::textur_speichern(&self.ordner, &textur)?;
+        let id = self
+            .assets
+            .textur_laden(renderer, &textur.zu_bytes())
+            .map_err(|e| e.to_string())?;
+
+        let mut text = format!("🖼 Bild '{name}' importiert ({breite} × {hoehe}) → texturen/{datei}");
+        if self.modus == Modus::Bearbeiten {
+            // Neues Objekt mitten im Bild; mehrere Dateien auf einmal leicht versetzt
+            self.markieren();
+            let versatz = vec2(nr as f32, -(nr as f32)) * 24.0 / self.kamera.zoom;
+            let o = self.welt.spawn((
+                Name(name.clone()),
+                Transform::bei(self.kamera.position + versatz),
+                Bild::new(id, self.start_groesse(id)),
+            ));
+            self.auswahl = Some(o);
+            self.tab = Tab::Szene;
+        } else {
+            text += " – Objekt nur im Bearbeiten-Modus, Textur ist aber schon nutzbar";
+        }
+        Ok(text)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sound_importieren(&mut self, pfad: &std::path::Path) -> Result<String, String> {
+        let daten = std::fs::read(pfad).map_err(|e| format!("{}: {e}", pfad.display()))?;
+        let wunsch = projekt::ohne_endung(&pfad.to_string_lossy());
+        let name = Self::freier_name(&wunsch, |n| self.audio.hat(n));
+        // Erst prüfen, ob sich der Sound lesen lässt, dann kopieren
+        Audio::pruefen(&daten).map_err(|e| format!("{}: {e}", pfad.display()))?;
+        let name_datei = projekt::sound_kopieren(&self.ordner, pfad, &name)?;
+        self.audio.sound_setzen(&name_datei, daten)?;
+        let _ = self.audio.abspielen(&name_datei, 1.0, false); // einmal anspielen
+        Ok(format!(
+            "🔊 Sound '{name_datei}' importiert → sounds/ – im Script: timbre.play_sound(\"{name_datei}\")"
+        ))
     }
 
     fn aktion(&mut self, a: Aktion) {
@@ -650,7 +859,7 @@ impl Studio {
                     self.kamera_vorher = self.kamera;
                 }
             }
-            Aktion::ScriptHinzufuegen(eltern) => self.script_anlegen(eltern),
+            Aktion::ScriptHinzufuegen(eltern, sprache) => self.script_anlegen(eltern, sprache),
             Aktion::Duplizieren(o) => self.duplizieren(o),
             Aktion::Loeschen(o) => self.loeschen(o),
             Aktion::ZiehenBeginnen(o) => self.explorer_ziehen = Some(o),
@@ -694,44 +903,61 @@ impl Studio {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let laufzeit = match self.motor_holen() {
-                Ok(m) => m.starten(),
-                Err(e) => Err(e),
-            };
-            match laufzeit {
-                Ok(mut lz) => {
-                    lz.kontext().texturen = self.assets.textur_namen().clone();
-                    // Alle aktiven Script-Objekte, nach Namen sortiert
-                    let mut scripts: Vec<(Objekt, String, Script, Option<Objekt>)> = self
-                        .welt
-                        .query::<(Objekt, &Script)>()
-                        .iter()
-                        .filter(|(_, s)| s.aktiv)
-                        .map(|(o, s)| (o, String::new(), s.clone(), None))
-                        .collect();
-                    for s in scripts.iter_mut() {
-                        s.1 = self.name(s.0);
-                        s.3 = self.eltern(s.0);
-                    }
-                    scripts.sort_by(|a, b| natuerlich(&a.1, &b.1));
-                    let mut fehlend = Vec::new();
-                    for (o, name, script, eltern) in &scripts {
-                        match self.puffer.get(&script.datei) {
-                            Some(p) => {
-                                lz.script_laden(&mut self.welt, name, &p.text, Some(*o), *eltern);
-                            }
-                            None => fehlend.push(format!("{name}: Datei scripts/{} fehlt", script.datei)),
-                        }
-                    }
-                    lz.start(&mut self.welt);
-                    self.laufzeit = Some(lz);
-                    for f in fehlend {
-                        self.melden(Art::Fehler, f);
-                    }
-                    self.meldungen_uebernehmen();
-                }
-                Err(e) => self.melden(Art::Fehler, format!("Scripting nicht verfügbar: {e}")),
+            // Alle aktiven Script-Objekte, nach Namen sortiert
+            let mut scripts: Vec<(Objekt, String, Script, Option<Objekt>)> = self
+                .welt
+                .query::<(Objekt, &Script)>()
+                .iter()
+                .filter(|(_, s)| s.aktiv)
+                .map(|(o, s)| (o, String::new(), s.clone(), None))
+                .collect();
+            for s in scripts.iter_mut() {
+                s.1 = self.name(s.0);
+                s.3 = self.eltern(s.0);
             }
+            scripts.sort_by(|a, b| natuerlich(&a.1, &b.1));
+
+            // Eine Laufzeit pro Sprache, die vorkommt (Luau immer – auch ohne Scripts billig)
+            let mut sprachen: Vec<Sprache> = vec![Sprache::Luau];
+            for (_, _, script, _) in &scripts {
+                if let Some(sp) = Sprache::aus_datei(&script.datei) {
+                    if !sprachen.contains(&sp) {
+                        sprachen.push(sp);
+                    }
+                }
+            }
+            self.laufzeiten.clear();
+            for sp in sprachen {
+                match self.motor_holen(sp).and_then(|m| m.starten()) {
+                    Ok(mut lz) => {
+                        lz.kontext().texturen = self.assets.textur_namen().clone();
+                        lz.kontext().sound_namen = self.audio.namen().cloned().collect();
+                        self.laufzeiten.push((sp, lz));
+                    }
+                    Err(e) => self.melden(Art::Fehler, format!("Scripting ({}) nicht verfügbar: {e}", sp.name())),
+                }
+            }
+
+            let mut fehlend = Vec::new();
+            for (o, name, script, eltern) in &scripts {
+                let sp = Sprache::aus_datei(&script.datei);
+                let Some((_, lz)) = self.laufzeiten.iter_mut().find(|(s, _)| Some(*s) == sp) else {
+                    continue; // Sprache nicht verfügbar – Fehler wurde schon gemeldet
+                };
+                match self.puffer.get(&script.datei) {
+                    Some(p) => {
+                        lz.script_laden(&mut self.welt, name, &p.text, Some(*o), *eltern);
+                    }
+                    None => fehlend.push(format!("{name}: Datei scripts/{} fehlt", script.datei)),
+                }
+            }
+            for (_, lz) in self.laufzeiten.iter_mut() {
+                lz.start(&mut self.welt);
+            }
+            for f in fehlend {
+                self.melden(Art::Fehler, f);
+            }
+            self.meldungen_uebernehmen();
         }
         #[cfg(target_arch = "wasm32")]
         self.melden(Art::System, "Scripts laufen im Browser erst ab Meilenstein 8.");
@@ -743,8 +969,9 @@ impl Studio {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.laufzeit = None;
+            self.laufzeiten.clear();
             self.texte.clear();
+            self.audio.stoppen("");
         }
         // Auswahl über den Namen wiederfinden (Objekt-Nummern ändern sich beim Zurücksetzen)
         let auswahl_name = self.auswahl.map(|o| self.name(o));
@@ -771,16 +998,20 @@ impl Studio {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn motor_holen(&mut self) -> Result<&ScriptMotor, String> {
-        if let Motor::Laedt(rx) = &self.motor {
+    fn motor_holen(&mut self, sprache: Sprache) -> Result<&ScriptMotor, String> {
+        let motor = self
+            .motoren
+            .entry(sprache)
+            .or_insert_with(|| motor_im_hintergrund(sprache));
+        if let Motor::Laedt(rx) = motor {
             // Notfalls warten, bis das Übersetzen fertig ist (dauert nur beim ersten Mal).
-            self.motor = match rx.recv() {
+            *motor = match rx.recv() {
                 Ok(Ok(m)) => Motor::Bereit(m),
                 Ok(Err(e)) => Motor::Kaputt(e),
                 Err(_) => Motor::Kaputt("Übersetzen abgebrochen".into()),
             };
         }
-        match &self.motor {
+        match motor {
             Motor::Bereit(m) => Ok(m),
             Motor::Kaputt(e) => Err(e.clone()),
             Motor::Laedt(_) => unreachable!(),
@@ -791,8 +1022,10 @@ impl Studio {
     // Speichern
     // -----------------------------------------------------------------------
 
-    /// Geänderte Scripts auf die Festplatte schreiben.
-    fn scripts_speichern(&mut self) {
+    /// Geänderte Scripts auf die Festplatte schreiben. Gibt die gespeicherten Dateien zurück.
+    fn scripts_speichern(&mut self) -> Vec<String> {
+        #[allow(unused_mut)]
+        let mut gespeichert = Vec::new();
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut dateien: Vec<String> = self.welt.query::<&Script>().iter().map(|s| s.datei.clone()).collect();
@@ -805,22 +1038,113 @@ impl Studio {
                 }
                 let text = p.text.clone();
                 match projekt::script_speichern(&self.ordner, &d, &text) {
-                    Ok(()) => self.puffer.get_mut(&d).unwrap().gespeichert = Some(text),
+                    Ok(()) => {
+                        self.puffer.get_mut(&d).unwrap().gespeichert = Some(text);
+                        gespeichert.push(d);
+                    }
                     Err(e) => self.melden(Art::Fehler, format!("Speichern fehlgeschlagen: {e}")),
                 }
+            }
+        }
+        gespeichert
+    }
+
+    /// Läuft das Spiel, übernimmt es die neue Fassung dieser Script-Datei sofort (Live-Neuladen).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn live_neu_laden(&mut self, datei: &str) {
+        if self.modus != Modus::Laeuft {
+            return;
+        }
+        let Some(text) = self.puffer.get(datei).map(|p| p.text.clone()) else {
+            return;
+        };
+        let objekte: Vec<Objekt> = self
+            .welt
+            .query::<(Objekt, &Script)>()
+            .iter()
+            .filter(|(_, s)| s.datei == datei && s.aktiv)
+            .map(|(o, _)| o)
+            .collect();
+        for o in objekte {
+            let name = self.name(o);
+            let eltern = self.eltern(o);
+            let sprache = Sprache::aus_datei(datei);
+            let Some((_, lz)) = self.laufzeiten.iter_mut().find(|(s, _)| Some(*s) == sprache) else {
+                return self.melden(
+                    Art::System,
+                    format!("{name}: Diese Sprache lief beim ▶ noch nicht mit – ■ Stopp und neu ▶ starten."),
+                );
+            };
+            if lz.abgestuerzt() {
+                return self.melden(Art::System, "Scripts sind angehalten – ■ Stopp und neu ▶ starten.");
+            }
+            match lz.script_neu_laden(&mut self.welt, &name, &text, o, eltern) {
+                Ok(true) => self.melden(Art::System, format!("🔄 {name} neu geladen")),
+                Ok(false) => {} // Fehler steht schon in den Meldungen
+                Err(e) => self.melden(Art::System, e),
+            }
+            self.fehler_zeilen.remove(datei);
+            self.meldungen_uebernehmen();
+        }
+    }
+
+    /// Wurden Scripts außerhalb des Studios geändert (z. B. in VS Code)? Dann übernehmen –
+    /// und wenn das Spiel läuft, sofort neu laden. Hat man dasselbe Script auch im Studio
+    /// ungespeichert geändert, gewinnt das Studio (mit Hinweis).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn platte_abgleichen(&mut self) {
+        let mut dateien: Vec<String> = self.welt.query::<&Script>().iter().map(|s| s.datei.clone()).collect();
+        dateien.sort();
+        dateien.dedup();
+        for d in dateien {
+            let Ok(platte) = std::fs::read_to_string(self.ordner.join("scripts").join(&d)) else {
+                continue;
+            };
+            let platte = platte.replace("\r\n", "\n");
+            let Some(p) = self.puffer.get_mut(&d) else { continue };
+            let Some(gespeichert) = p.gespeichert.as_ref() else {
+                continue;
+            };
+            if *gespeichert == platte {
+                continue;
+            }
+            if !p.geaendert() {
+                p.text = platte.clone();
+                p.gespeichert = Some(platte);
+                self.konflikte.remove(&d);
+                self.melden(
+                    Art::System,
+                    format!("📝 scripts/{d} wurde außerhalb geändert – übernommen"),
+                );
+                self.live_neu_laden(&d);
+            } else if self.konflikte.get(&d) != Some(&platte) {
+                self.konflikte.insert(d.clone(), platte);
+                self.melden(
+                    Art::Fehler,
+                    format!(
+                        "scripts/{d} wurde außerhalb geändert, ist aber auch im Studio ungespeichert geändert. \
+                         Strg+S überschreibt die Datei mit der Studio-Fassung."
+                    ),
+                );
             }
         }
     }
 
     fn alles_speichern(&mut self) {
-        self.scripts_speichern();
+        let gespeichert = self.scripts_speichern();
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.modus == Modus::Laeuft {
-                return self.melden(
-                    Art::System,
-                    "Scripts gespeichert. Die Szene wird nur im Bearbeiten-Modus gespeichert.",
-                );
+                if gespeichert.is_empty() {
+                    return self.melden(
+                        Art::System,
+                        "Nichts zu speichern. Die Szene wird nur im Bearbeiten-Modus gespeichert.",
+                    );
+                }
+                for d in gespeichert {
+                    self.live_neu_laden(&d);
+                }
+                return;
             }
             // Dateien ohne Script-Objekt (gelöscht oder umbenannt) → Papierkorb
             let mut weg = 0;
@@ -892,48 +1216,53 @@ impl Studio {
             }
             Modus::Laeuft => {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(lz) = self.laufzeit.as_mut() {
-                    if !lz.abgestuerzt() {
+                {
+                    let mut eingabe = input.clone();
+                    if !tastatur_frei {
+                        eingabe.tasten_loeschen();
+                    }
+                    if !self.maus_ueber_szene {
+                        eingabe.maus_loeschen();
+                    }
+                    let mut abgestuerzt = Vec::new();
+                    for (sp, lz) in self.laufzeiten.iter_mut() {
+                        if lz.abgestuerzt() {
+                            continue;
+                        }
                         let k = lz.kontext();
-                        let mut eingabe = input.clone();
-                        if !tastatur_frei {
-                            eingabe.tasten_loeschen();
-                        }
-                        if !self.maus_ueber_szene {
-                            eingabe.maus_loeschen();
-                        }
-                        k.input = eingabe;
+                        k.input = eingabe.clone();
                         k.maus_welt = self.maus_welt;
                         lz.update(&mut self.welt, dt);
                         if let Some(kamera) = lz.kontext().kamera.take() {
                             self.kamera = kamera;
                         }
-                        let abgestuerzt = lz.abgestuerzt();
-                        self.meldungen_uebernehmen();
-                        if abgestuerzt {
-                            self.melden(
-                                Art::System,
-                                "Scripts angehalten. Mit ■ stoppen, Fehler beheben, erneut ▶.",
-                            );
+                        if lz.abgestuerzt() {
+                            abgestuerzt.push(sp.name());
                         }
+                    }
+                    self.meldungen_uebernehmen();
+                    for name in abgestuerzt {
+                        self.melden(
+                            Art::System,
+                            format!("{name}-Scripts angehalten. Mit ■ stoppen, Fehler beheben, erneut ▶."),
+                        );
                     }
                 }
                 welt::bewegen(&mut self.welt, dt);
 
-                // Kollisionen auflösen und Berührungen an die Scripts melden (on_touch)
+                // Kollisionen auflösen (einmal) und Berührungen an alle Laufzeiten melden (on_touch)
+                let paare = timbre_core::physik::schritt(&mut self.welt);
                 #[cfg(not(target_arch = "wasm32"))]
-                match self.laufzeit.as_mut() {
-                    Some(lz) => {
-                        lz.kollisionen(&mut self.welt);
-                        self.texte = lz.kontext().texte.clone();
-                        self.meldungen_uebernehmen();
+                {
+                    self.texte.clear();
+                    for (_, lz) in self.laufzeiten.iter_mut() {
+                        lz.beruehrungen_melden(&mut self.welt, &paare);
+                        self.texte.extend(lz.kontext().texte.clone());
                     }
-                    None => {
-                        timbre_core::physik::schritt(&mut self.welt);
-                    }
+                    self.meldungen_uebernehmen();
                 }
                 #[cfg(target_arch = "wasm32")]
-                timbre_core::physik::schritt(&mut self.welt);
+                let _ = paare;
             }
         }
     }
@@ -958,6 +1287,36 @@ impl Studio {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Dateien ins Fenster gezogen? (PNG → Bild, WAV/OGG/MP3/FLAC → Sound)
+        let (gezogen, schwebt) = ctx.input(|i| {
+            (
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|d| d.path().to_path_buf())
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect::<Vec<_>>(),
+                !i.raw.hovered_files.is_empty(),
+            )
+        });
+        self.importe.extend(gezogen);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.platte_geprueft.elapsed().as_secs_f32() > 1.0 {
+            self.platte_geprueft = web_time::Instant::now();
+            self.platte_abgleichen();
+        }
+        if schwebt {
+            let r = ctx.content_rect();
+            let maler = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("import")));
+            maler.rect_filled(r, 0.0, Color32::from_black_alpha(150));
+            maler.text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                "Loslassen zum Importieren\nPNG → Bild · WAV / OGG / MP3 / FLAC → Sound",
+                egui::FontId::proportional(24.0),
+                Color32::WHITE,
+            );
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             if self.modus == Modus::Laeuft {
                 self.stoppen()
@@ -1148,19 +1507,20 @@ impl Studio {
         ui.label(RichText::new("Explorer").strong());
         ui.horizontal_wrapped(|ui| {
             if ui.small_button("+ Baumscheibe").clicked() {
-                self.objekt_anlegen("Baumscheibe", "jahresringe", 120.0);
+                self.objekt_anlegen("Baumscheibe", "jahresringe", Vec2::splat(120.0));
             }
             if ui.small_button("+ Blatt").clicked() {
-                self.objekt_anlegen("Blatt", "blatt", 64.0);
+                self.objekt_anlegen("Blatt", "blatt", Vec2::splat(64.0));
             }
             if ui
                 .small_button("+ Script")
                 .on_hover_text("Neues Script – unter dem ausgewählten Objekt, falls eins ausgewählt ist")
                 .clicked()
             {
-                self.script_anlegen(self.auswahl);
+                self.script_anlegen(self.auswahl, Sprache::Luau);
             }
         });
+        self.assets_ui(ui);
         ui.separator();
 
         // Baum aufbauen: Eltern → Kinder, Kinder natürlich sortiert
@@ -1239,8 +1599,10 @@ impl Studio {
                 }
             }
             rest.context_menu(|ui| {
-                if ui.button("📜 Neues Script").clicked() {
-                    aktionen.push(Aktion::ScriptHinzufuegen(None));
+                for sprache in Sprache::ALLE {
+                    if ui.button(format!("📜 Neues Script ({})", sprache.name())).clicked() {
+                        aktionen.push(Aktion::ScriptHinzufuegen(None, sprache));
+                    }
                 }
             });
         });
@@ -1333,11 +1695,27 @@ impl Studio {
 
         // Script
         if let Some(s) = script {
+            let mut sprache_neu = None;
             ui.add_space(6.0);
             ui.label(RichText::new("📜 Script").strong());
             egui::Grid::new("script").num_columns(2).show(ui, |ui| {
                 ui.label("Sprache");
-                ui.label("Luau");
+                let jetzt = Sprache::aus_datei(&s.datei).unwrap_or(Sprache::Luau);
+                let mut wahl = jetzt;
+                egui::ComboBox::from_id_salt("sprache")
+                    .selected_text(jetzt.name())
+                    .show_ui(ui, |ui| {
+                        for sp in Sprache::ALLE {
+                            ui.selectable_value(&mut wahl, sp, sp.name());
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Andere Sprache = andere Dateiendung. Der Text bleibt – Luau und Lua sind sich sehr ähnlich.",
+                    );
+                if wahl != jetzt {
+                    sprache_neu = Some(wahl);
+                }
                 ui.end_row();
                 ui.label("Datei");
                 ui.label(RichText::new(format!("scripts/{}", s.datei)).monospace());
@@ -1367,6 +1745,9 @@ impl Studio {
                 .clicked()
             {
                 self.script_oeffnen(&s.datei);
+            }
+            if let Some(sp) = sprache_neu {
+                self.sprache_wechseln(o, sp);
             }
         }
 
@@ -1610,12 +1991,40 @@ impl Studio {
         }
     }
 
+    /// Namen aus dem Projekt für Vorschläge in Texten (Sounds, Bilder, Objekte, Nachrichten).
+    fn projektnamen(&self) -> vervollstaendigung::Projektnamen {
+        let mut objekte: Vec<String> = self.welt.query::<&Name>().iter().map(|n| n.0.clone()).collect();
+        objekte.sort_by(|a, b| natuerlich(a, b));
+        objekte.dedup();
+        let mut texturen: Vec<String> = self.assets.textur_namen().keys().cloned().collect();
+        texturen.sort();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut sounds: Vec<String> = self.audio.namen().cloned().collect();
+        #[cfg(target_arch = "wasm32")]
+        let mut sounds: Vec<String> = Vec::new();
+        sounds.sort();
+        vervollstaendigung::Projektnamen {
+            sounds,
+            texturen,
+            objekte,
+            nachrichten: vervollstaendigung::Projektnamen::nachrichten_aus(
+                self.puffer.values().map(|p| p.text.as_str()),
+            ),
+        }
+    }
+
     fn editor_ui(&mut self, ui: &mut egui::Ui, datei: &str) {
+        let id = egui::Id::new(("editor", datei));
+        // Nur berechnen, wenn der Editor den Fokus hat (sonst gibt es keine Vorschläge)
+        let projektnamen = if ui.ctx().memory(|m| m.has_focus(id)) {
+            self.projektnamen()
+        } else {
+            Default::default()
+        };
         let Some(puffer) = self.puffer.get_mut(datei) else {
             ui.label(RichText::new(format!("scripts/{datei} fehlt.")).color(Color32::from_rgb(0xE5, 0x6B, 0x5D)));
             return;
         };
-        let id = egui::Id::new(("editor", datei));
         let schrift = egui::FontId::monospace(luau_farben::SCHRIFTGROESSE);
         let zeilenhoehe = ui
             .painter()
@@ -1649,6 +2058,33 @@ impl Studio {
             }
         }
 
+        // Autovervollständigung: Tasten abfangen, bevor der Editor sie bekommt
+        let fokus = ui.ctx().memory(|m| m.has_focus(id));
+        let mut uebernehmen = false;
+        let erzwungen = fokus && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Space));
+        if !fokus || self.vorschlag.as_ref().is_some_and(|v| v.datei != datei) {
+            self.vorschlag = None;
+        }
+        if let Some(v) = self.vorschlag.as_mut() {
+            let n = v.eintraege.len();
+            ui.input_mut(|i| {
+                if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                    v.auswahl = (v.auswahl + 1) % n;
+                }
+                if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                    v.auswahl = (v.auswahl + n - 1) % n;
+                }
+                if i.consume_key(Modifiers::NONE, Key::Tab) || i.consume_key(Modifiers::NONE, Key::Enter) {
+                    uebernehmen = true;
+                }
+            });
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                self.vorschlag = None;
+            }
+        }
+        let vorschlag = &mut self.vorschlag;
+        let mut gewaehlt: Option<usize> = None;
+
         let mut geaendert = false;
         egui::Frame::new().fill(ui.visuals().extreme_bg_color).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
@@ -1668,20 +2104,163 @@ impl Studio {
                     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, breite: f32| {
                         luau_farben::layout(ui, text.as_str(), breite, fehler_zeile)
                     };
-                    let r = ui.add(
-                        egui::TextEdit::multiline(&mut puffer.text)
-                            .id(id)
-                            .code_editor()
-                            .margin(egui::Margin::ZERO)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(40)
-                            .frame(egui::Frame::NONE)
-                            .layouter(&mut layouter),
-                    );
-                    geaendert = r.changed();
+                    let ausgabe = egui::TextEdit::multiline(&mut puffer.text)
+                        .id(id)
+                        .code_editor()
+                        .margin(egui::Margin::ZERO)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(40)
+                        .frame(egui::Frame::NONE)
+                        .layouter(&mut layouter)
+                        .show(ui);
+                    geaendert = ausgabe.response.changed();
+                    let Some(cursor) = ausgabe.cursor_range.map(|c| c.primary) else {
+                        *vorschlag = None;
+                        return;
+                    };
+
+                    // Übernehmen (Tab/Enter)
+                    if uebernehmen {
+                        if let Some(v) = vorschlag.take() {
+                            let neu = vervollstaendigung::einsetzen(
+                                &mut puffer.text,
+                                v.anfang,
+                                cursor.index.0,
+                                &v.eintraege[v.auswahl],
+                            );
+                            let mut zustand = ausgabe.state.clone();
+                            zustand
+                                .cursor
+                                .set_char_range(Some(egui::text_selection::CCursorRange::one(
+                                    egui::text::CCursor::new(neu),
+                                )));
+                            zustand.store(ui.ctx(), id);
+                            geaendert = true;
+                            return;
+                        }
+                    }
+
+                    // Liste neu berechnen, wenn getippt wurde; schließen, wenn der Cursor woandershin springt
+                    if geaendert || erzwungen {
+                        *vorschlag = vervollstaendigung::vorschlaege(
+                            &puffer.text,
+                            cursor.index.0,
+                            erzwungen,
+                            datei.ends_with(".lua"),
+                            &projektnamen,
+                        )
+                        .map(|(anfang, eintraege)| vervollstaendigung::Offen {
+                            datei: datei.to_string(),
+                            anfang,
+                            eintraege,
+                            auswahl: 0,
+                        });
+                    } else if let Some(v) = vorschlag.as_ref() {
+                        let im_text = v.eintraege.first().is_some_and(|e| e.text);
+                        let passt = cursor.index.0 >= v.anfang
+                            && puffer
+                                .text
+                                .chars()
+                                .skip(v.anfang)
+                                .take(cursor.index.0 - v.anfang)
+                                .all(|c| {
+                                    if im_text {
+                                        !matches!(c, '"' | '\'' | '\n')
+                                    } else {
+                                        c.is_alphanumeric() || c == '_'
+                                    }
+                                });
+                        if !passt {
+                            *vorschlag = None;
+                        }
+                    }
+
+                    // Liste unter dem Cursor zeichnen
+                    if let Some(v) = vorschlag.as_ref() {
+                        let stelle = ausgabe
+                            .galley
+                            .pos_from_cursor(egui::text::CCursor::new(v.anfang))
+                            .translate(ausgabe.galley_pos.to_vec2());
+                        egui::Area::new(egui::Id::new(("vorschlaege", datei)))
+                            .fixed_pos(stelle.left_bottom() + egui::vec2(0.0, 2.0))
+                            .order(egui::Order::Foreground)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.set_max_width(520.0);
+                                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                        for (i, e) in v.eintraege.iter().enumerate() {
+                                            let text = RichText::new(match e.klammern {
+                                                Some(_) => format!("{}()", e.name),
+                                                None if e.text => format!("\"{}\"", e.name),
+                                                None => e.name.clone(),
+                                            })
+                                            .monospace();
+                                            let zeile = ui.horizontal(|ui| {
+                                                let r = ui.selectable_label(i == v.auswahl, text);
+                                                ui.label(RichText::new(&e.info).weak().small());
+                                                r
+                                            });
+                                            if i == v.auswahl {
+                                                zeile.inner.scroll_to_me(None);
+                                            }
+                                            if zeile.inner.clicked() {
+                                                gewaehlt = Some(i);
+                                            }
+                                        }
+                                    });
+                                    ui.label(
+                                        RichText::new("Pfeiltasten wählen · Tab/Enter übernehmen · Esc schließen")
+                                            .weak()
+                                            .small(),
+                                    );
+                                });
+                            });
+                    } else if ui.ctx().memory(|m| m.has_focus(id)) {
+                        // Keine Liste offen: Signatur der Funktion zeigen, in deren Klammern der Cursor steht
+                        if let Some((info, argument)) = vervollstaendigung::hinweis(&puffer.text, cursor.index.0) {
+                            let stelle = ausgabe
+                                .galley
+                                .pos_from_cursor(cursor)
+                                .translate(ausgabe.galley_pos.to_vec2());
+                            egui::Area::new(egui::Id::new(("signatur", datei)))
+                                .fixed_pos(stelle.left_top() - egui::vec2(0.0, 26.0))
+                                .order(egui::Order::Foreground)
+                                .interactable(false)
+                                .show(ui.ctx(), |ui| {
+                                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(info).monospace().small());
+                                            ui.label(
+                                                RichText::new(format!("· Argument {}", argument + 1)).weak().small(),
+                                            );
+                                        });
+                                    });
+                                });
+                        }
+                    }
                 });
             });
         });
+        // Mit der Maus gewählt: wie Tab, aber erst im nächsten Frame (Cursor-Stand von dort)
+        if let Some(i) = gewaehlt {
+            if let (Some(v), Some(p)) = (self.vorschlag.take(), self.puffer.get_mut(datei)) {
+                let zustand = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                let cursor = zustand
+                    .cursor
+                    .char_range()
+                    .map_or(p.text.chars().count(), |c| c.primary.index.0);
+                let neu = vervollstaendigung::einsetzen(&mut p.text, v.anfang, cursor, &v.eintraege[i]);
+                let mut zustand = zustand;
+                zustand
+                    .cursor
+                    .set_char_range(Some(egui::text_selection::CCursorRange::one(egui::text::CCursor::new(
+                        neu,
+                    ))));
+                zustand.store(ui.ctx(), id);
+                ui.ctx().memory_mut(|m| m.request_focus(id));
+                geaendert = true;
+            }
+        }
         if geaendert {
             self.fehler_zeilen.remove(datei);
         }
@@ -1736,6 +2315,71 @@ impl Studio {
                 linie(y.abs() < g * 0.5),
             );
             y += g;
+        }
+    }
+
+    /// Bilder und Sounds des Projekts. Neue kommen per Drag & Drop ins Fenster.
+    fn assets_ui(&mut self, ui: &mut egui::Ui) {
+        let bearbeiten = self.modus == Modus::Bearbeiten;
+        let mut bilder: Vec<(String, TexturId)> = self
+            .assets
+            .textur_namen()
+            .iter()
+            .map(|(n, t)| (n.clone(), *t))
+            .collect();
+        bilder.sort_by(|a, b| natuerlich(&a.0, &b.0));
+        egui::CollapsingHeader::new(format!("🖼 Bilder ({})", bilder.len()))
+            .id_salt("assets_bilder")
+            .show(ui, |ui| {
+                ui.label(RichText::new("PNG ins Fenster ziehen = neues Bild").weak().small());
+                egui::ScrollArea::vertical()
+                    .id_salt("bilder_liste")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (name, textur) in &bilder {
+                            let (b, h) = self.assets.pixel_groesse(*textur).unwrap_or((0, 0));
+                            let knopf = ui
+                                .add_enabled(bearbeiten, egui::Button::new(format!("🖼 {name}")).small())
+                                .on_hover_text(format!(
+                                    "{b} × {h} Pixel – klicken: in die Szene setzen\nIm Script: timbre.set_sprite(objekt, \"{name}\", breite, höhe)"
+                                ));
+                            if knopf.clicked() {
+                                let g = self.start_groesse(*textur);
+                                self.objekt_anlegen(name, name, g);
+                            }
+                        }
+                    });
+            });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut sounds: Vec<String> = self.audio.namen().cloned().collect();
+            sounds.sort_by(|a, b| natuerlich(a, b));
+            egui::CollapsingHeader::new(format!("🔊 Sounds ({})", sounds.len()))
+                .id_salt("assets_sounds")
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("WAV / OGG / MP3 / FLAC ins Fenster ziehen")
+                            .weak()
+                            .small(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt("sounds_liste")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for name in &sounds {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("▶").on_hover_text("Anhören").clicked() {
+                                        let _ = self.audio.abspielen(name, 1.0, false);
+                                    }
+                                    ui.label(name)
+                                        .on_hover_text(format!("Im Script: timbre.play_sound(\"{name}\")"));
+                                });
+                            }
+                            if !sounds.is_empty() && ui.small_button("■ Alle stoppen").clicked() {
+                                self.audio.stoppen("");
+                            }
+                        });
+                });
         }
     }
 
@@ -2057,8 +2701,15 @@ fn knoten_ui(ui: &mut egui::Ui, o: Objekt, b: &Baum, aktionen: &mut Vec<Aktion>)
                 if ui.button("Öffnen").clicked() {
                     aktionen.push(Aktion::Oeffnen(o));
                 }
-            } else if ui.button("📜 Script hinzufügen").clicked() {
-                aktionen.push(Aktion::ScriptHinzufuegen(Some(o)));
+            } else {
+                for sprache in Sprache::ALLE {
+                    if ui
+                        .button(format!("📜 Script hinzufügen ({})", sprache.name()))
+                        .clicked()
+                    {
+                        aktionen.push(Aktion::ScriptHinzufuegen(Some(o), sprache));
+                    }
+                }
             }
             if ui.button("📋 Duplizieren").clicked() {
                 aktionen.push(Aktion::Duplizieren(o));
@@ -2105,10 +2756,14 @@ fn fehler_ort(text: &str) -> Option<(String, usize)> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn motor_im_hintergrund() -> Motor {
+fn motor_im_hintergrund(sprache: Sprache) -> Motor {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(ScriptMotor::neu(LUAU_GAST));
+        let wasm = match sprache {
+            Sprache::Luau => LUAU_GAST,
+            Sprache::Lua => LUA_GAST,
+        };
+        let _ = tx.send(ScriptMotor::neu(wasm).map_err(|e| format!("{}: {e}", sprache.name())));
     });
     Motor::Laedt(rx)
 }

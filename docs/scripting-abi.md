@@ -16,7 +16,9 @@ Schnittstelle. `wit/timbre.wit` beschreibt dieselben Funktionen als Dokumentatio
 | `timbre_alloc` | `(i32 n) → i32 ptr` | Speicher für Texte vom Host |
 | `timbre_free` | `(i32 ptr) → ()` | wieder freigeben |
 | `timbre_laden` | `(i32 name, i32 name_n, i32 quelle, i32 quelle_n, i64 script_id, i64 eltern_id) → i32` | Script laden und Hauptteil ausführen; 0 ok, 1 Syntaxfehler, 2 Laufzeitfehler. IDs 0 = keins; der Gast stellt sie als `script.id` / `script.parent` bereit |
-| `timbre_script_stoppen` | `(i64 script_id) → ()` | Script anhalten (sein Objekt wurde gelöscht) |
+| `timbre_script_stoppen` | `(i64 script_id) → ()` | Script anhalten (sein Objekt wurde gelöscht) – seine wartenden Aufgaben (`task.wait`/`delay`) enden mit |
+| `timbre_nachricht` | `(i32 name, i32 name_n, i32 art, f64 zahl, i32 text, i32 text_n) → ()` | Optional. `broadcast` aus einer **anderen** Sprache → `on_message` in allen Scripts (nicht weiterreichen). `art`: 0 nil, 1 bool (`zahl` 0/1), 2 Zahl, 3 Text, 4 Ganzzahl |
+| `timbre_neu_laden` | wie `timbre_laden` | **Live-Neuladen** (optional): neue Fassung eines laufenden Scripts. Erst übersetzen – bei Syntaxfehler läuft die alte Fassung weiter (Rückgabe 1). Sonst alte Fassung(en) mit gleicher `script_id` anhalten, neue laden und, falls `timbre_start` schon lief, ihr `on_start` aufrufen |
 | `timbre_beruehrung` | `(i64 script_id, i64 anderes) → ()` | Das Eltern-Objekt des Scripts hat `anderes` neu berührt → `on_touch` |
 
 `timbre_update` weckt nach den `on_update`-Aufrufen auch fällige `task.wait`/`task.delay`-Aufgaben
@@ -55,9 +57,27 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `mouse_down`, `mouse_pressed` | `(i32 taste) → i32` – 0 links, 1 rechts, 2 Mitte |
 | `ui_text` | `(i32 k, i32 kn, i32 t, i32 tn, f32 x, f32 y, f32 größe, f32 r, f32 g, f32 b, f32 a)` |
 | `ui_clear` | `(i32 k, i32 kn)` – leerer Schlüssel = alle |
+| `play_sound` | `(i32 p, i32 n, f32 lautstärke, i32 schleife) → i32` – 0 = Sound unbekannt; eine Endung im Namen wird ignoriert |
+| `nachricht` | `(i32 p, i32 n, i32 art, f64 zahl, i32 t, i32 tn)` – jedes `broadcast` meldet sich hier zusätzlich, damit der Host es an die anderen Sprachen weiterreicht (Kodierung wie bei `timbre_nachricht`) |
+| `stop_sounds` | `(i32 p, i32 n)` – leerer Name = alle |
 
 Außerdem stellt der Host die wenigen WASI-Funktionen bereit, die eine C-Laufzeit braucht
-(`fd_write`, `fd_close`, `fd_seek`, `fd_fdstat_get`, `clock_time_get`). Dateizugriffe werden abgelehnt.
+(`fd_write`, `fd_close`, `fd_seek`, `fd_fdstat_get`, `fd_fdstat_set_flags`, `fd_read`, `fd_renumber`,
+`fd_prestat_get`, `fd_prestat_dir_name`, `path_open`, `proc_exit`, `clock_time_get`).
+Dateizugriffe werden abgelehnt, es gibt keine vorab geöffneten Ordner.
+
+## Gäste
+
+| Sprache | Modul | Quelle / Bauen |
+|---|---|---|
+| Luau | `assets/scripting/luau.wasm` | `tools/luau-gast/` (C++, Luau 0.22) |
+| Lua 5.4 | `assets/scripting/lua.wasm` | `tools/lua-gast/` (dieselbe `gast.cpp`-Logik mit Lua-5.4-API, Lua 5.4.8 aus dem Crate `lua-src`) |
+
+Jede Sprache bekommt beim ▶ ihre eigene Laufzeit (eigene wasmtime-Instanz). Physik läuft einmal,
+Berührungen werden an jede Laufzeit gemeldet. `broadcast` stellt jeder Gast selbst sofort zu (beliebige
+Daten) und meldet es zusätzlich per Import `nachricht`; der Host reicht es nach dem Aufruf per
+`timbre_nachricht` an die anderen Laufzeiten weiter (höchstens 8 Runden Hin und Her pro Schritt).
+`shared` bleibt im jeweiligen Gast.
 
 ## Grenzen
 
