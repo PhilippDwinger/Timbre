@@ -40,6 +40,11 @@ const TEXTUREN: [&[u8]; 2] = [
 const LUAU_GAST: &[u8] = include_bytes!("../../../assets/scripting/luau.wasm");
 #[cfg(not(target_arch = "wasm32"))]
 const LUA_GAST: &[u8] = include_bytes!("../../../assets/scripting/lua.wasm");
+/// Python: CPython 3.12 (tools/python-gast/bauen.sh) und seine Standardbibliothek.
+#[cfg(not(target_arch = "wasm32"))]
+const PYTHON_GAST: &[u8] = include_bytes!("../../../assets/scripting/python.wasm");
+#[cfg(not(target_arch = "wasm32"))]
+const PYTHON_BIBLIOTHEK: &[u8] = include_bytes!("../../../assets/scripting/python312.zip");
 
 const MAX_KONSOLE: usize = 2000;
 /// So viele Schritte kann man rückgängig machen.
@@ -217,7 +222,11 @@ impl Studio {
             schnappschuss: None,
             kamera_vor_start: Kamera2d::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            motoren: Sprache::ALLE.iter().map(|&s| (s, motor_im_hintergrund(s))).collect(),
+            // Luau und Lua sind klein – gleich übersetzen. Python (groß) erst, wenn es gebraucht wird.
+            motoren: [Sprache::Luau, Sprache::Lua]
+                .iter()
+                .map(|&s| (s, motor_im_hintergrund(s)))
+                .collect(),
             #[cfg(not(target_arch = "wasm32"))]
             laufzeiten: Vec::new(),
             konsole: Vec::new(),
@@ -321,6 +330,16 @@ impl Studio {
             );
         }
         let anzahl_scripts = self.welt.query::<&Script>().iter().count();
+        // Sprachen, die im Projekt vorkommen, schon im Hintergrund vorbereiten (Python ist groß)
+        let sprachen: Vec<Sprache> = self
+            .welt
+            .query::<&Script>()
+            .iter()
+            .filter_map(|s| Sprache::aus_datei(&s.datei))
+            .collect();
+        for sp in sprachen {
+            self.motor_vorbereiten(sp);
+        }
         self.melden(
             Art::System,
             format!(
@@ -330,6 +349,16 @@ impl Studio {
                 anzahl_scripts
             ),
         );
+    }
+
+    /// Gast-Modul einer Sprache im Hintergrund übersetzen lassen, falls noch nicht geschehen.
+    fn motor_vorbereiten(&mut self, sprache: Sprache) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.motoren
+            .entry(sprache)
+            .or_insert_with(|| motor_im_hintergrund(sprache));
+        #[cfg(target_arch = "wasm32")]
+        let _ = sprache;
     }
 
     pub fn titel(&self) -> String {
@@ -570,6 +599,7 @@ impl Studio {
     }
 
     fn script_anlegen(&mut self, eltern: Option<Objekt>, sprache: Sprache) {
+        self.motor_vorbereiten(sprache);
         // Scripts hängen nicht unter Scripts – dann unter dessen Eltern.
         let eltern = eltern.and_then(|e| {
             if self.welt.get::<&Script>(e).is_ok() {
@@ -614,6 +644,7 @@ impl Studio {
 
     /// Sprache eines Scripts wechseln (= andere Dateiendung). Der Text bleibt, wie er ist.
     fn sprache_wechseln(&mut self, o: Objekt, sprache: Sprache) {
+        self.motor_vorbereiten(sprache);
         let Ok(alt) = self.welt.get::<&Script>(o).map(|s| s.datei.clone()) else {
             return;
         };
@@ -2101,8 +2132,9 @@ impl Studio {
                         )
                         .selectable(false),
                     );
+                    let python = datei.ends_with(".py");
                     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, breite: f32| {
-                        luau_farben::layout(ui, text.as_str(), breite, fehler_zeile)
+                        luau_farben::layout(ui, text.as_str(), breite, fehler_zeile, python)
                     };
                     let ausgabe = egui::TextEdit::multiline(&mut puffer.text)
                         .id(id)
@@ -2146,7 +2178,7 @@ impl Studio {
                             &puffer.text,
                             cursor.index.0,
                             erzwungen,
-                            datei.ends_with(".lua"),
+                            Sprache::aus_datei(datei).unwrap_or(Sprache::Luau),
                             &projektnamen,
                         )
                         .map(|(anfang, eintraege)| vervollstaendigung::Offen {
@@ -2217,7 +2249,11 @@ impl Studio {
                             });
                     } else if ui.ctx().memory(|m| m.has_focus(id)) {
                         // Keine Liste offen: Signatur der Funktion zeigen, in deren Klammern der Cursor steht
-                        if let Some((info, argument)) = vervollstaendigung::hinweis(&puffer.text, cursor.index.0) {
+                        if let Some((info, argument)) = vervollstaendigung::hinweis(
+                            &puffer.text,
+                            cursor.index.0,
+                            Sprache::aus_datei(datei).unwrap_or(Sprache::Luau),
+                        ) {
                             let stelle = ausgabe
                                 .galley
                                 .pos_from_cursor(cursor)
@@ -2759,11 +2795,17 @@ fn fehler_ort(text: &str) -> Option<(String, usize)> {
 fn motor_im_hintergrund(sprache: Sprache) -> Motor {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let wasm = match sprache {
-            Sprache::Luau => LUAU_GAST,
-            Sprache::Lua => LUA_GAST,
+        let motor = match sprache {
+            Sprache::Luau => ScriptMotor::neu(LUAU_GAST),
+            Sprache::Lua => ScriptMotor::neu(LUA_GAST),
+            Sprache::Python => {
+                // Die Standardbibliothek sieht Python als /lib/python312.zip (schreibgeschützt)
+                let mut dateien = std::collections::BTreeMap::new();
+                dateien.insert("lib/python312.zip".to_string(), std::sync::Arc::from(PYTHON_BIBLIOTHEK));
+                ScriptMotor::mit_dateien(PYTHON_GAST, dateien)
+            }
         };
-        let _ = tx.send(ScriptMotor::neu(wasm).map_err(|e| format!("{}: {e}", sprache.name())));
+        let _ = tx.send(motor.map_err(|e| format!("{}: {e}", sprache.name())));
     });
     Motor::Laedt(rx)
 }

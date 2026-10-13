@@ -60,6 +60,10 @@ pub struct Kontext {
     pub sound_befehle: Vec<SoundBefehl>,
     /// `timbre.broadcast` dieser Laufzeit – für Scripts anderer Sprachen (siehe [`ScriptLaufzeit::nachricht_zustellen`])
     pub ausgehend: Vec<Nachricht>,
+    /// Schreibgeschützte Dateien für den Gast (z. B. Python-Standardbibliothek) und offene Dateien
+    pub dateisystem: crate::wasi::Dateisystem,
+    /// Zustand für `random_get`
+    pub zufall: u64,
 }
 
 /// Eine Nachricht (`timbre.broadcast`) zwischen Script-Sprachen. Daten nur einfach – Tabellen werden zu nil.
@@ -104,23 +108,44 @@ pub struct BildschirmText {
 pub struct ScriptMotor {
     engine: Engine,
     modul: Module,
+    /// Dateien, die der Gast lesen darf (Pfad ohne führenden `/` → Inhalt)
+    dateien: std::sync::Arc<BTreeMap<String, std::sync::Arc<[u8]>>>,
 }
 
 impl ScriptMotor {
     pub fn neu(wasm: &[u8]) -> Result<Self, String> {
+        Self::mit_dateien(wasm, BTreeMap::new())
+    }
+
+    /// Wie [`Self::neu`], dazu schreibgeschützte Dateien für den Gast – z. B.
+    /// `"lib/python312.zip"` für Python (der Gast sieht sie als `/lib/python312.zip`).
+    pub fn mit_dateien(wasm: &[u8], dateien: BTreeMap<String, std::sync::Arc<[u8]>>) -> Result<Self, String> {
         let mut cfg = Config::new();
         cfg.wasm_exceptions(true); // Luau meldet Fehler per WebAssembly-Exception
         cfg.consume_fuel(true); // Endlosschleifen abbrechen können
         let engine = Engine::new(&cfg).map_err(|e| format!("wasmtime: {e}"))?;
-        let modul = Module::new(&engine, wasm).map_err(|e| format!("Gast-Modul ungültig: {e}"))?;
-        Ok(Self { engine, modul })
+        let modul = modul_mit_zwischenspeicher(&engine, wasm)?;
+        Ok(Self {
+            engine,
+            modul,
+            dateien: std::sync::Arc::new(dateien),
+        })
     }
 
     /// Frische Laufzeit für einen Durchlauf (▶). Jeder Start beginnt bei null.
     pub fn starten(&self) -> Result<ScriptLaufzeit, String> {
         let mut linker = Linker::new(&self.engine);
         importe_registrieren(&mut linker).map_err(|e| e.to_string())?;
-        let mut store = Store::new(&self.engine, Kontext::default());
+        let kontext = Kontext {
+            dateisystem: crate::wasi::Dateisystem::neu(self.dateien.clone()),
+            zufall: web_time::SystemTime::now()
+                .duration_since(web_time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15)
+                | 1,
+            ..Default::default()
+        };
+        let mut store = Store::new(&self.engine, kontext);
         store.set_fuel(TREIBSTOFF_LADEN).ok();
         let instanz = linker
             .instantiate(&mut store, &self.modul)
@@ -163,6 +188,35 @@ impl ScriptMotor {
             abgestuerzt: false,
         })
     }
+}
+
+/// Gast-Modul übersetzen – oder das Ergebnis vom letzten Mal nehmen.
+///
+/// Das Übersetzen großer Gäste (Python: ~11 MB) dauert einige Sekunden. Darum landet das
+/// Ergebnis im Temp-Ordner (`%TEMP%\timbre-cache`). Der Dateiname enthält eine Prüfsumme des
+/// Moduls und der wasmtime-Einstellungen; passt etwas nicht mehr, wird einfach neu übersetzt.
+fn modul_mit_zwischenspeicher(engine: &Engine, wasm: &[u8]) -> Result<Module, String> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    wasm.hash(&mut h);
+    engine.precompile_compatibility_hash().hash(&mut h);
+    let ordner = std::env::temp_dir().join("timbre-cache");
+    let datei = ordner.join(format!("{:016x}.cwasm", h.finish()));
+    if datei.exists() {
+        // SAFETY: Die Datei hat Timbre selbst mit derselben Engine-Einstellung geschrieben (siehe Prüfsumme).
+        if let Ok(m) = unsafe { Module::deserialize_file(engine, &datei) } {
+            return Ok(m);
+        }
+    }
+    let modul = Module::new(engine, wasm).map_err(|e| format!("Gast-Modul ungültig: {e}"))?;
+    if let Ok(bytes) = modul.serialize() {
+        let _ = std::fs::create_dir_all(&ordner);
+        let temp = datei.with_extension("tmp");
+        if std::fs::write(&temp, bytes).is_ok() {
+            let _ = std::fs::rename(&temp, &datei);
+        }
+    }
+    Ok(modul)
 }
 
 /// Eine laufende Script-Umgebung (von ▶ bis ■).
@@ -775,37 +829,8 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
         },
     )?;
 
-    // Die wenigen Systemfunktionen, die die C-Bibliothek im Gast erwartet.
-    // Dateien gibt es für Scripts nicht – alles meldet "nicht erlaubt".
-    const W: &str = "wasi_snapshot_preview1";
-    const NICHT_ERLAUBT: i32 = 63; // EPERM
-    l.func_wrap(W, "fd_close", |_: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_fdstat_get", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_seek", |_: i32, _: i64, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_write", |_: i32, _: i32, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_fdstat_set_flags", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_read", |_: i32, _: i32, _: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "fd_renumber", |_: i32, _: i32| -> i32 { NICHT_ERLAUBT })?;
-    l.func_wrap(W, "proc_exit", |code: i32| -> wasmtime::Result<()> {
-        Err(wasmtime::Error::msg(format!("Gast hat sich beendet (Code {code})")))
-    })?;
-    // Vorab geöffnete Ordner: keine (EBADF beendet die Suche der C-Bibliothek)
-    l.func_wrap(W, "fd_prestat_get", |_: i32, _: i32| -> i32 { 8 })?;
-    l.func_wrap(W, "fd_prestat_dir_name", |_: i32, _: i32, _: i32| -> i32 { 8 })?;
-    l.func_wrap(
-        W,
-        "path_open",
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i64, _: i64, _: i32, _: i32| -> i32 { NICHT_ERLAUBT },
-    )?;
-    l.func_wrap(
-        W,
-        "clock_time_get",
-        |mut c: Caller<'_, Kontext>, _id: i32, _genauigkeit: i64, aus: i32| -> wasmtime::Result<i32> {
-            let nanos = (c.data().zeit * 1e9) as u64;
-            speicher(&mut c)?.write(&mut c, aus as usize, &nanos.to_le_bytes())?;
-            Ok(0)
-        },
-    )?;
+    // Systemfunktionen (WASI) der C-Bibliothek im Gast: nur ein schreibgeschütztes Dateisystem im Speicher
+    crate::wasi::registrieren(l)?;
     Ok(())
 }
 
@@ -995,6 +1020,114 @@ mod tests {
                 Meldung::Info("hallo 7".into()),
                 Meldung::Info("neu".into())
             ]
+        );
+    }
+
+    // --- Python (CPython 3.12) ---------------------------------------------------------------
+
+    fn python_laufzeit() -> (ScriptLaufzeit, Welt) {
+        let wasm = include_bytes!("../../../assets/scripting/python.wasm");
+        let zip: std::sync::Arc<[u8]> = include_bytes!("../../../assets/scripting/python312.zip")[..].into();
+        let mut dateien = BTreeMap::new();
+        dateien.insert("lib/python312.zip".to_string(), zip);
+        let motor = ScriptMotor::mit_dateien(wasm, dateien).unwrap();
+        (motor.starten().unwrap(), Welt::new())
+    }
+
+    #[test]
+    fn python_script_bewegt_objekt_und_wartet() {
+        let (mut l, mut welt) = python_laufzeit();
+        let quelle = r#"
+import math, random
+kiste = None
+
+async def on_start():
+    global kiste
+    kiste = timbre.spawn("Kiste")
+    print("erzeugt", type(kiste).__name__, round(math.sqrt(16)))
+    await task.wait(0.05)
+    print("gewartet")
+
+def on_update(dt):
+    x, y = timbre.get_position(kiste)
+    timbre.set_position(kiste, x + 10 * dt, y)
+"#;
+        assert!(
+            l.script_laden(&mut welt, "test.py", quelle, None, None),
+            "{:?}",
+            meldungen(&mut l)
+        );
+        l.start(&mut welt);
+        for _ in 0..60 {
+            l.update(&mut welt, 1.0 / 60.0);
+        }
+        assert_eq!(
+            meldungen(&mut l),
+            vec![Meldung::Info("erzeugt int 4".into()), Meldung::Info("gewartet".into())]
+        );
+        let mut q = welt.query::<(&Name, &Transform)>();
+        let (name, t) = q.iter().next().unwrap();
+        assert_eq!(name.0, "Kiste");
+        assert!((t.position.x - 10.0).abs() < 0.01, "x = {}", t.position.x);
+    }
+
+    #[test]
+    fn python_fehler_mit_zeile_und_neu_laden() {
+        use crate::welt::Script;
+        let (mut l, mut welt) = python_laufzeit();
+        assert!(!l.script_laden(&mut welt, "kaputt.py", "def f(:\n  pass", None, None));
+        assert!(l.script_laden(
+            &mut welt,
+            "fehler.py",
+            "def on_update(dt):\n    x = None\n    print(x.y)\n",
+            None,
+            None
+        ));
+        l.update(&mut welt, 0.016);
+        l.update(&mut welt, 0.016);
+        let m = meldungen(&mut l);
+        assert!(
+            matches!(&m[0], Meldung::Fehler(t) if t.starts_with("kaputt.py:1: Syntaxfehler")),
+            "{m:?}"
+        );
+        assert!(
+            matches!(&m[1], Meldung::Fehler(t) if t.starts_with("fehler.py:3: AttributeError")),
+            "{m:?}"
+        );
+        assert_eq!(m.len(), 3, "nur einmal gemeldet + angehalten: {m:?}");
+        // Live-Neuladen
+        let s = welt.spawn((
+            Name("S".into()),
+            Script {
+                datei: "s.py".into(),
+                aktiv: true,
+            },
+        ));
+        assert!(l.script_laden(
+            &mut welt,
+            "s.py",
+            "def on_message(m, d): print('alt', m)",
+            Some(s),
+            None
+        ));
+        l.start(&mut welt);
+        assert_eq!(
+            l.script_neu_laden(
+                &mut welt,
+                "s.py",
+                "def on_start(): timbre.broadcast('x', 1.5)\ndef on_message(m, d): print('neu', m, d)",
+                s,
+                None
+            ),
+            Ok(true)
+        );
+        assert_eq!(meldungen(&mut l), vec![Meldung::Info("neu x 1.5".into())]);
+        assert_eq!(
+            l.kontext().ausgehend,
+            vec![Nachricht {
+                name: "x".into(),
+                daten: Wert::Zahl(1.5)
+            }]
         );
     }
 

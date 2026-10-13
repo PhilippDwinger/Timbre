@@ -24,16 +24,19 @@ pub struct Script {
 pub enum Sprache {
     Luau,
     Lua,
+    Python,
 }
 
 impl Sprache {
-    pub const ALLE: [Sprache; 2] = [Sprache::Luau, Sprache::Lua];
+    pub const ALLE: [Sprache; 3] = [Sprache::Luau, Sprache::Lua, Sprache::Python];
 
     pub fn aus_datei(datei: &str) -> Option<Sprache> {
         if datei.ends_with(".luau") {
             Some(Sprache::Luau)
         } else if datei.ends_with(".lua") {
             Some(Sprache::Lua)
+        } else if datei.ends_with(".py") {
+            Some(Sprache::Python)
         } else {
             None
         }
@@ -43,6 +46,7 @@ impl Sprache {
         match self {
             Sprache::Luau => "luau",
             Sprache::Lua => "lua",
+            Sprache::Python => "py",
         }
     }
 
@@ -50,6 +54,7 @@ impl Sprache {
         match self {
             Sprache::Luau => "Luau",
             Sprache::Lua => "Lua 5.4",
+            Sprache::Python => "Python 3",
         }
     }
 
@@ -58,6 +63,7 @@ impl Sprache {
         match self {
             Sprache::Luau => "-- Neues Script (Luau)\n-- script.parent = das Objekt, unter dem dieses Script hängt (oder nil)\n\nfunction on_start()\n\tprint(\"Hallo aus\", script.name)\nend\n\nfunction on_update(dt)\n\nend\n",
             Sprache::Lua => "-- Neues Script (Lua 5.4)\n-- script.parent = das Objekt, unter dem dieses Script hängt (oder nil)\n\nfunction on_start()\n\tprint(\"Hallo aus\", script.name)\nend\n\nfunction on_update(dt)\n\nend\n",
+            Sprache::Python => "# Neues Script (Python 3)\n# script.parent = das Objekt, unter dem dieses Script hängt (oder None)\n\ndef on_start():\n    print(\"Hallo aus\", script.name)\n\ndef on_update(dt):\n    pass\n",
         }
     }
 }
@@ -67,6 +73,7 @@ pub fn ohne_script_endung(datei: &str) -> &str {
     datei
         .strip_suffix(".luau")
         .or_else(|| datei.strip_suffix(".lua"))
+        .or_else(|| datei.strip_suffix(".py"))
         .unwrap_or(datei)
 }
 

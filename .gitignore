@@ -4,6 +4,8 @@
 # … außer den fertig gebauten Script-Gästen (siehe tools/luau-gast)
 !/assets/scripting/*.wasm
 /pkg
+# Downloads der Gast-Bauskripte (wasi-sdk, libpython …)
+/tools/*/.cache/
 dist/
 .vscode/settings.json
 .DS_Store

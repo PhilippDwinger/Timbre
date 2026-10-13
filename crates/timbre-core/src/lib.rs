@@ -10,6 +10,8 @@ pub mod renderer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scripting;
 pub mod szene;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod wasi;
 pub mod welt;
 pub mod zeit;
 

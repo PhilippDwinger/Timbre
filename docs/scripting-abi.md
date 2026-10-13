@@ -61,10 +61,8 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `nachricht` | `(i32 p, i32 n, i32 art, f64 zahl, i32 t, i32 tn)` – jedes `broadcast` meldet sich hier zusätzlich, damit der Host es an die anderen Sprachen weiterreicht (Kodierung wie bei `timbre_nachricht`) |
 | `stop_sounds` | `(i32 p, i32 n)` – leerer Name = alle |
 
-Außerdem stellt der Host die wenigen WASI-Funktionen bereit, die eine C-Laufzeit braucht
-(`fd_write`, `fd_close`, `fd_seek`, `fd_fdstat_get`, `fd_fdstat_set_flags`, `fd_read`, `fd_renumber`,
-`fd_prestat_get`, `fd_prestat_dir_name`, `path_open`, `proc_exit`, `clock_time_get`).
-Dateizugriffe werden abgelehnt, es gibt keine vorab geöffneten Ordner.
+Außerdem stellt der Host alle WASI-preview1-Funktionen bereit, die eine C-Laufzeit braucht – nur
+lesend und nur für mitgegebene Dateien (siehe „Speicher-Dateisystem“ unten).
 
 ## Gäste
 
@@ -72,6 +70,15 @@ Dateizugriffe werden abgelehnt, es gibt keine vorab geöffneten Ordner.
 |---|---|---|
 | Luau | `assets/scripting/luau.wasm` | `tools/luau-gast/` (C++, Luau 0.22) |
 | Lua 5.4 | `assets/scripting/lua.wasm` | `tools/lua-gast/` (dieselbe `gast.cpp`-Logik mit Lua-5.4-API, Lua 5.4.8 aus dem Crate `lua-src`) |
+| Python 3.12 | `assets/scripting/python.wasm` + `python312.zip` | `tools/python-gast/` – `gast.c` (Modul `timbre`, Exporte) + `laufzeit.py` (Script-Verwaltung, async/await). CPython als fertige `libpython3.12.a` (WASI) von den *WebAssembly Language Runtimes* (VMware Labs), gelinkt mit wasi-sdk 20. Die Standardbibliothek liegt als Zip im **schreibgeschützten Speicher-Dateisystem** des Hosts (`/lib/python312.zip`) |
+
+**Speicher-Dateisystem** (`timbre-core/src/wasi.rs`): Der Host bietet alle WASI-preview1-Funktionen an.
+Lesen geht nur aus Dateien, die die Engine dem Gast mitgibt (`ScriptMotor::mit_dateien`), über ein
+vorab geöffnetes `/` (fd 3). Alles, was schreibt, ändert oder ins Netz will, wird abgelehnt
+(`EROFS`/`ENOTSUP`). stdout/stderr landen zeilenweise in der Konsole.
+
+**Zwischenspeicher:** Übersetzte Gast-Module legt der Host im Temp-Ordner ab (`timbre-cache/<prüfsumme>.cwasm`),
+damit Python beim zweiten Start sofort bereit ist.
 
 Jede Sprache bekommt beim ▶ ihre eigene Laufzeit (eigene wasmtime-Instanz). Physik läuft einmal,
 Berührungen werden an jede Laufzeit gemeldet. `broadcast` stellt jeder Gast selbst sofort zu (beliebige

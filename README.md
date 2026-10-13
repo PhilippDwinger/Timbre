@@ -35,7 +35,7 @@ Der allererste Build dauert einige Minuten (Grafik, Scripting und Oberfläche we
 | **WAV / OGG / MP3 / FLAC ins Fenster ziehen** | Wird zum Sound (`sounds/` im Projekt), im Script: `timbre.play_sound("Name")` |
 | Explorer: **🖼 Bilder** / **🔊 Sounds** | Alle Bilder (klicken = in die Szene setzen) und Sounds (▶ = anhören) des Projekts |
 
-Scripts schreiben: siehe `docs/scripting.md`.
+Scripts schreiben (Luau, Lua 5.4 oder Python 3): siehe `docs/scripting.md`.
 
 ## Starten (Browser)
 Einmalig:

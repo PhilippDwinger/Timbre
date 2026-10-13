@@ -1,4 +1,6 @@
 *.tbr binary
 *.png binary
 *.wasm binary
+*.zip binary
+*.py text eol=lf
 *.luau text eol=lf

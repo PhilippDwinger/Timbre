@@ -1,12 +1,12 @@
-# Scripts in Timbre (Luau und Lua)
+# Scripts in Timbre (Luau, Lua und Python)
 
 Scripts sind **Objekte** in der Szene – wie in Roblox. Sie stehen im **Explorer**, gern unter
 dem Objekt, das sie steuern sollen. Der Quelltext liegt als Datei unter `scripts/<Name>.luau`
-(Luau) bzw. `scripts/<Name>.lua` (Lua 5.4). Beide Sprachen können in einem Spiel gemischt werden
-und haben dieselben Funktionen (`timbre.*`, `task.*`, `on_start` …).
+(Luau), `scripts/<Name>.lua` (Lua 5.4) bzw. `scripts/<Name>.py` (Python 3). Alle Sprachen können
+in einem Spiel gemischt werden und haben dieselben Funktionen (`timbre.*`, `task.*`, `on_start` …).
 
 - **Neues Script:** „+ Script“ im Explorer (Luau, landet unter dem ausgewählten Objekt) oder
-  Rechtsklick auf ein Objekt bzw. die freie Fläche → „Script hinzufügen (Luau / Lua 5.4)“.
+  Rechtsklick auf ein Objekt bzw. die freie Fläche → „Script hinzufügen (Luau / Lua 5.4 / Python 3)“.
 - **Sprache wechseln:** Eigenschaften → Sprache (ändert die Dateiendung, der Text bleibt).
 - **Öffnen:** Doppelklick im Explorer.
 - **Eigenschaften:** Name (benennt auch die Datei um), Eltern, Aktiviert.
@@ -157,3 +157,42 @@ Gesperrt (wie in Luau): `io`, `os`, `require`, `dofile`, `loadfile`, `debug` –
 (`nil`, `true`/`false`, Zahl, Text; eine Tabelle kommt als `nil` an) und erst direkt nach dem
 aktuellen Aufruf statt sofort. `shared` gilt nur innerhalb einer Sprache.
 Beispiel: `Zeit.lua` (Lua) hört auf die Nachricht `"gesammelt"` aus `Steuerung.luau` (Luau).
+
+## Python 3
+
+Echtes Python 3.12 mit großen Teilen der Standardbibliothek (`math`, `random`, `collections`,
+`dataclasses`, `json`, `re`, `itertools` …). Nicht dabei: alles mit Dateien, Netz oder Fenstern
+(`open` zum Schreiben, `socket`, `tkinter` …) – Scripts dürfen am Rechner nichts ändern.
+
+```python
+import math
+
+spieler = script.parent
+
+async def on_start():            # async: darf warten
+    print("Los geht's!")
+    await task.wait(2)            # 2 Sekunden warten
+    timbre.ui_text("hallo", "Viel Glück!", 16, 120)
+
+def on_update(dt):               # 60× pro Sekunde, darf NICHT warten
+    x, y = timbre.get_position(spieler)
+    timbre.set_rotation(spieler, math.sin(timbre.time()))
+
+def on_message(nachricht, daten=None):
+    if nachricht == "gesammelt":
+        timbre.play_sound("Muenze")
+```
+
+Unterschiede zu Luau/Lua:
+
+- **Warten** geht mit `async def` und `await task.wait(sekunden)` – in `on_start`, `on_touch`,
+  `on_message` und in Funktionen für `task.spawn`/`task.delay`. Ein `task.wait` ohne `await` wartet nicht.
+- `None` statt `nil`, `True`/`False` statt `true`/`false`. `get_position` liefert ein Tupel `(x, y)`.
+- Optionale Argumente der `timbre`-Funktionen nur der Reihe nach, nicht mit Namen:
+  `timbre.play_sound("Jubel", 1.0, True)` statt `play_sound("Jubel", schleife=True)`.
+- `shared` ist ein `dict` für alle Python-Scripts. `timbre.broadcast` erreicht auch Luau und Lua.
+- Der erste Start nach dem Öffnen dauert ein paar Sekunden länger (Python wird übersetzt und für
+  das nächste Mal zwischengespeichert).
+
+Beispiel: `Funkeln.py` im Beispielprojekt – sprüht Funken, wenn `Steuerung.luau` ein Goldstück meldet.
+

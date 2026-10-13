@@ -1,4 +1,4 @@
-//! Syntax-Hervorhebung für Luau im Script-Editor.
+//! Syntax-Hervorhebung im Script-Editor – für Luau/Lua und (mit `python = true`) für Python.
 
 use std::sync::Arc;
 
@@ -8,6 +8,12 @@ use egui::{Color32, FontId, Galley, Ui};
 const SCHLUESSELWOERTER: &[&str] = &[
     "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
     "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
+];
+
+const PYTHON_SCHLUESSELWOERTER: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
 ];
 
 struct Farben {
@@ -49,7 +55,12 @@ pub const SCHRIFTGROESSE: f32 = 13.5;
 
 /// Text des Editors in farbige Abschnitte zerlegen. `markiert` = Zeile (ab 1), die rot
 /// hinterlegt wird (z. B. Fehlerzeile).
-pub fn layout(ui: &Ui, text: &str, wrap_breite: f32, markiert: Option<usize>) -> Arc<Galley> {
+pub fn layout(ui: &Ui, text: &str, wrap_breite: f32, markiert: Option<usize>, python: bool) -> Arc<Galley> {
+    let schluesselwoerter = if python {
+        PYTHON_SCHLUESSELWOERTER
+    } else {
+        SCHLUESSELWOERTER
+    };
     let f = farben(ui.visuals().dark_mode);
     let schrift = FontId::monospace(SCHRIFTGROESSE);
     let markierung = Color32::from_rgba_unmultiplied(0xE5, 0x6B, 0x5D, 45);
@@ -70,7 +81,19 @@ pub fn layout(ui: &Ui, text: &str, wrap_breite: f32, markiert: Option<usize>) ->
     while i < bytes.len() {
         let rest = &text[i..];
         let c = bytes[i];
-        let ende = if rest.starts_with("--[[") {
+        let ende = if python && (rest.starts_with("\"\"\"") || rest.starts_with("'''")) {
+            // Mehrzeiliger Text (oft als Kommentar benutzt)
+            let e = rest[3..].find(&rest[..3]).map(|p| p + 6).unwrap_or(rest.len());
+            abschnitt(&mut job, &rest[..e], f.zeichenkette);
+            e
+        } else if python && c == b'#' {
+            let e = rest.find('\n').unwrap_or(rest.len());
+            abschnitt(&mut job, &rest[..e], f.kommentar);
+            e
+        } else if python && rest.starts_with("--") {
+            abschnitt(&mut job, "-", f.text);
+            1
+        } else if rest.starts_with("--[[") {
             // Block-Kommentar
             let e = rest.find("]]").map(|p| p + 2).unwrap_or(rest.len());
             abschnitt(&mut job, &rest[..e], f.kommentar);
@@ -99,9 +122,9 @@ pub fn layout(ui: &Ui, text: &str, wrap_breite: f32, markiert: Option<usize>) ->
                 .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
                 .unwrap_or(rest.len());
             let wort = &rest[..e];
-            let farbe = if SCHLUESSELWOERTER.contains(&wort) {
+            let farbe = if schluesselwoerter.contains(&wort) {
                 f.schluessel
-            } else if wort == "timbre" {
+            } else if wort == "timbre" || (python && wort == "task") {
                 f.timbre
             } else if rest[e..].trim_start().starts_with('(') {
                 f.funktion

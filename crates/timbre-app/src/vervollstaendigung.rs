@@ -13,6 +13,8 @@
 //!
 //! Pfeiltasten wählen, Tab oder Enter übernehmen, Esc schließt. Strg+Leertaste öffnet die Liste von Hand.
 
+use crate::projekt::Sprache;
+
 /// Ein möglicher Vorschlag.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Eintrag {
@@ -168,6 +170,82 @@ const TABLE: &[(&str, &str)] = &[
     ("clone(", "clone(t)"),
 ];
 
+// --- Python -------------------------------------------------------------------------------
+
+const PY_TASK: &[(&str, &str)] = &[
+    (
+        "wait(",
+        "await task.wait(sekunden) – nur in async def (on_start, on_touch, on_message)",
+    ),
+    ("delay(", "delay(sekunden, funktion, *args)"),
+    ("spawn(", "spawn(funktion, *args) – sofort als eigene Aufgabe"),
+];
+
+const PY_MATH: &[(&str, &str)] = &[
+    ("sqrt(", "sqrt(x)"),
+    ("floor(", "floor(x) → int"),
+    ("ceil(", "ceil(x) → int"),
+    ("sin(", "sin(x)"),
+    ("cos(", "cos(x)"),
+    ("atan2(", "atan2(y, x)"),
+    ("hypot(", "hypot(x, y) – Länge"),
+    ("radians(", "radians(grad)"),
+    ("degrees(", "degrees(bogenmass)"),
+    ("pi", "3.14159…"),
+    ("tau", "2·pi"),
+    ("inf", "unendlich"),
+    ("isclose(", "isclose(a, b)"),
+];
+
+const PY_RANDOM: &[(&str, &str)] = &[
+    ("random()", "random() → 0 ≤ x < 1"),
+    ("uniform(", "uniform(a, b) → Kommazahl"),
+    ("randint(", "randint(a, b) → ganze Zahl, a und b inklusive"),
+    ("choice(", "choice(liste)"),
+    ("shuffle(", "shuffle(liste) – mischt an Ort und Stelle"),
+    ("seed(", "seed(zahl)"),
+];
+
+const PY_GLOBAL: &[(&str, &str)] = &[
+    ("timbre", "Engine-Funktionen – timbre."),
+    ("task", "Aufgaben: await task.wait / task.delay / task.spawn"),
+    ("script", "dieses Script: script.parent, script.name"),
+    ("shared", "dict, das alle Python-Scripts gemeinsam sehen"),
+    ("print(", "print(...) – in die Konsole"),
+    ("len(", "len(x)"),
+    ("range(", "range([start,] ende[, schritt])"),
+    ("int(", "int(x)"),
+    ("float(", "float(x)"),
+    ("str(", "str(x)"),
+    ("abs(", "abs(x)"),
+    ("min(", "min(a, b, ...)"),
+    ("max(", "max(a, b, ...)"),
+    ("round(", "round(x[, stellen])"),
+    ("sum(", "sum(liste)"),
+    ("list(", "list(x)"),
+    ("dict(", "dict(...)"),
+    ("enumerate(", "enumerate(liste) – for i, x in enumerate(liste)"),
+    ("isinstance(", "isinstance(x, typ)"),
+    ("sorted(", "sorted(liste)"),
+    ("math", "import math"),
+    ("random", "import random"),
+    ("on_start", "def on_start(): – einmal bei ▶ (darf async sein)"),
+    ("on_update", "def on_update(dt): – 60× pro Sekunde"),
+    ("on_touch", "def on_touch(anderes): – Eltern-Objekt berührt etwas"),
+    (
+        "on_message",
+        "def on_message(nachricht, daten): – nach timbre.broadcast",
+    ),
+];
+
+const PY_SCHLUESSELWOERTER: &[&str] = &[
+    "False", "None", "True", "and", "as", "async", "await", "break", "class", "continue", "def", "elif", "else",
+    "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or",
+    "pass", "raise", "return", "try", "while", "with", "yield",
+];
+
+// --- Luau / Lua --------------------------------------------------------------------------
+
 const SCHLUESSELWOERTER: &[&str] = &[
     "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil",
     "not", "or", "repeat", "return", "then", "true", "until", "while",
@@ -228,18 +306,19 @@ fn ist_namenszeichen(c: char) -> bool {
 /// Vorschläge für die Cursor-Position `cursor` (Zeichen-Index) in `text`.
 ///
 /// Liefert (Anfang des angefangenen Worts, passende Einträge). `erzwungen` = Strg+Leertaste:
-/// dann auch ohne angefangenes Wort. `lua54` = Lua statt Luau (kein `continue`, kein `typeof`).
+/// dann auch ohne angefangenes Wort. `sprache` bestimmt Schlüsselwörter und Bibliotheken.
 /// `projekt` = Namen für Vorschläge in Texten.
 pub fn vorschlaege(
     text: &str,
     cursor: usize,
     erzwungen: bool,
-    lua54: bool,
+    sprache: Sprache,
     projekt: &Projektnamen,
 ) -> Option<(usize, Vec<Eintrag>)> {
     let zeichen: Vec<char> = text.chars().collect();
     let cursor = cursor.min(zeichen.len());
-    if let Some(ergebnis) = text_vorschlaege(&zeichen, cursor, erzwungen, projekt) {
+    let python = sprache == Sprache::Python;
+    if let Some(ergebnis) = text_vorschlaege(&zeichen, cursor, erzwungen, projekt, python) {
         return ergebnis;
     }
     // Kein Vorschlag mitten in einem Wort (rechts vom Cursor geht es weiter)
@@ -257,7 +336,12 @@ pub fn vorschlaege(
     // In Kommentar oder Text? Grob: Zeile bis zum Cursor ansehen.
     let zeilenanfang = zeichen[..anfang].iter().rposition(|c| *c == '\n').map_or(0, |i| i + 1);
     let zeile: String = zeichen[zeilenanfang..anfang].iter().collect();
-    if zeile.contains("--") || zeile.matches('"').count() % 2 == 1 || zeile.matches('`').count() % 2 == 1 {
+    let kommentar = if python {
+        zeile.contains('#')
+    } else {
+        zeile.contains("--")
+    };
+    if kommentar || zeile.matches('"').count() % 2 == 1 || zeile.matches('`').count() % 2 == 1 {
         return None;
     }
 
@@ -268,21 +352,30 @@ pub fn vorschlaege(
             b -= 1;
         }
         let bibliothek: String = zeichen[b..anfang - 1].iter().collect();
-        match bibliothek.as_str() {
-            "timbre" => eintraege(TIMBRE),
-            "task" => eintraege(TASK),
-            "script" => eintraege(SCRIPT),
-            "math" => eintraege(MATH),
-            "string" => eintraege(STRING),
-            "table" => eintraege(TABLE),
+        match (bibliothek.as_str(), python) {
+            ("timbre", _) => eintraege(TIMBRE),
+            ("script", _) => eintraege(SCRIPT),
+            ("task", true) => eintraege(PY_TASK),
+            ("math", true) => eintraege(PY_MATH),
+            ("random", true) => eintraege(PY_RANDOM),
+            (_, true) => return None,
+            ("task", false) => eintraege(TASK),
+            ("math", false) => eintraege(MATH),
+            ("string", false) => eintraege(STRING),
+            ("table", false) => eintraege(TABLE),
             _ => return None,
         }
     } else {
         if wort.is_empty() && !erzwungen {
             return None;
         }
-        let mut v = eintraege(GLOBAL);
-        v.extend(SCHLUESSELWOERTER.iter().map(|w| Eintrag {
+        let mut v = eintraege(if python { PY_GLOBAL } else { GLOBAL });
+        let woerter = if python {
+            PY_SCHLUESSELWOERTER
+        } else {
+            SCHLUESSELWOERTER
+        };
+        v.extend(woerter.iter().map(|w| Eintrag {
             name: w.to_string(),
             info: "Schlüsselwort".into(),
             klammern: None,
@@ -321,7 +414,7 @@ pub fn vorschlaege(
         v
     };
 
-    if lua54 {
+    if sprache == Sprache::Lua {
         kandidaten.retain(|e| e.name != "continue" && e.name != "typeof");
     }
 
@@ -352,13 +445,13 @@ fn zeilenanfang(zeichen: &[char], pos: usize) -> usize {
 }
 
 /// Steht `pos` in einem Text (`"…"` oder `'…'`) der aktuellen Zeile? Dann: Position des öffnenden Zeichens.
-fn offener_text(zeichen: &[char], pos: usize) -> Option<usize> {
+fn offener_text(zeichen: &[char], pos: usize, python: bool) -> Option<usize> {
     let mut offen: Option<(usize, char)> = None;
     let mut i = zeilenanfang(zeichen, pos);
     while i < pos {
         let c = zeichen[i];
         match offen {
-            None if c == '-' && zeichen.get(i + 1) == Some(&'-') => return None, // Kommentar
+            None if kommentar_ab(zeichen, i, python) => return None,
             None if c == '"' || c == '\'' => offen = Some((i, c)),
             Some((_, q)) if c == '\\' => {
                 let _ = q;
@@ -374,7 +467,16 @@ fn offener_text(zeichen: &[char], pos: usize) -> Option<usize> {
 
 /// Welcher Funktionsaufruf umschließt `pos`? Liefert (Bibliothek, Funktion, Argument-Nummer ab 0).
 /// Sucht nur in der aktuellen Zeile; Texte und verschachtelte Klammern werden übersprungen.
-fn aufruf_um(zeichen: &[char], pos: usize) -> Option<(String, String, usize)> {
+/// Beginnt bei `i` ein Kommentar? (`--` in Luau/Lua, `#` in Python)
+fn kommentar_ab(zeichen: &[char], i: usize, python: bool) -> bool {
+    if python {
+        zeichen[i] == '#'
+    } else {
+        zeichen[i] == '-' && zeichen.get(i + 1) == Some(&'-')
+    }
+}
+
+fn aufruf_um(zeichen: &[char], pos: usize, python: bool) -> Option<(String, String, usize)> {
     let anfang = zeilenanfang(zeichen, pos);
     // Vorwärts durch die Zeile: Stapel offener Klammern mit ihrer Komma-Zahl
     let mut stapel: Vec<(usize, usize)> = Vec::new();
@@ -391,7 +493,7 @@ fn aufruf_um(zeichen: &[char], pos: usize) -> Option<(String, String, usize)> {
         } else {
             match c {
                 '"' | '\'' => text = Some(c),
-                '-' if zeichen.get(i + 1) == Some(&'-') => return None,
+                _ if kommentar_ab(zeichen, i, python) => return None,
                 '(' => stapel.push((i, 0)),
                 ')' => {
                     stapel.pop();
@@ -437,8 +539,9 @@ fn text_vorschlaege(
     cursor: usize,
     erzwungen: bool,
     projekt: &Projektnamen,
+    python: bool,
 ) -> Option<Option<(usize, Vec<Eintrag>)>> {
-    let auf = offener_text(zeichen, cursor)?;
+    let auf = offener_text(zeichen, cursor, python)?;
     let anfang = auf + 1;
     let wort: String = zeichen[anfang..cursor].iter().collect();
 
@@ -453,7 +556,7 @@ fn text_vorschlaege(
         l.extend(projekt.objekte.iter().map(|n| (n.clone(), "Objekt")));
         l
     } else {
-        let Some((bibliothek, funktion, argument)) = aufruf_um(zeichen, auf) else {
+        let Some((bibliothek, funktion, argument)) = aufruf_um(zeichen, auf, python) else {
             return Some(None);
         };
         if bibliothek != "timbre" && !bibliothek.is_empty() {
@@ -500,17 +603,23 @@ fn text_vorschlaege(
 
 /// Signatur der Funktion, in deren Klammern der Cursor steht – z. B. für `timbre.set_position(id, |`.
 /// Liefert (Signatur, Argument-Nummer ab 0).
-pub fn hinweis(text: &str, cursor: usize) -> Option<(String, usize)> {
+pub fn hinweis(text: &str, cursor: usize, sprache: Sprache) -> Option<(String, usize)> {
+    let python = sprache == Sprache::Python;
     let zeichen: Vec<char> = text.chars().collect();
     let cursor = cursor.min(zeichen.len());
-    let (bibliothek, funktion, argument) = aufruf_um(&zeichen, cursor)?;
-    let liste = match bibliothek.as_str() {
-        "timbre" => TIMBRE,
-        "task" => TASK,
-        "math" => MATH,
-        "string" => STRING,
-        "table" => TABLE,
-        "" => GLOBAL,
+    let (bibliothek, funktion, argument) = aufruf_um(&zeichen, cursor, python)?;
+    let liste = match (bibliothek.as_str(), python) {
+        ("timbre", _) => TIMBRE,
+        ("task", true) => PY_TASK,
+        ("math", true) => PY_MATH,
+        ("random", true) => PY_RANDOM,
+        ("", true) => PY_GLOBAL,
+        (_, true) => return None,
+        ("task", false) => TASK,
+        ("math", false) => MATH,
+        ("string", false) => STRING,
+        ("table", false) => TABLE,
+        ("", false) => GLOBAL,
         _ => return None,
     };
     liste
@@ -581,7 +690,7 @@ mod tests {
 
     fn namen(text: &str) -> Vec<String> {
         let cursor = text.chars().count();
-        vorschlaege(text, cursor, false, false, &projekt())
+        vorschlaege(text, cursor, false, Sprache::Luau, &projekt())
             .map(|(_, v)| v.into_iter().map(|e| e.name).collect())
             .unwrap_or_default()
     }
@@ -613,12 +722,12 @@ mod tests {
     #[test]
     fn einsetzen_mit_klammern() {
         let mut t = "timbre.set_p".to_string();
-        let (anfang, v) = vorschlaege(&t, 12, false, false, &projekt()).unwrap();
+        let (anfang, v) = vorschlaege(&t, 12, false, Sprache::Luau, &projekt()).unwrap();
         let cursor = einsetzen(&mut t, anfang, 12, &v[0]);
         assert_eq!(t, "timbre.set_position()");
         assert_eq!(cursor, 20); // zwischen den Klammern
         let mut t = "x = timbre.ti\nweiter".to_string();
-        let (anfang, v) = vorschlaege(&t, 13, false, false, &projekt()).unwrap();
+        let (anfang, v) = vorschlaege(&t, 13, false, Sprache::Luau, &projekt()).unwrap();
         let cursor = einsetzen(&mut t, anfang, 13, &v[0]);
         assert_eq!(t, "x = timbre.time()\nweiter");
         assert_eq!(cursor, 17);
@@ -642,13 +751,13 @@ mod tests {
     fn text_einsetzen_schliesst_anfuehrungszeichen() {
         let mut t = "timbre.play_sound(\"Mu".to_string();
         let c = t.chars().count();
-        let (anfang, v) = vorschlaege(&t, c, false, false, &projekt()).unwrap();
+        let (anfang, v) = vorschlaege(&t, c, false, Sprache::Luau, &projekt()).unwrap();
         let neu = einsetzen(&mut t, anfang, c, &v[0]);
         assert_eq!(t, "timbre.play_sound(\"Muenze\"");
         assert_eq!(neu, t.chars().count());
         // Schließendes Zeichen schon da: nicht doppeln
         let mut t = "timbre.play_sound(\"Mu\", 0.5)".to_string();
-        let (anfang, v) = vorschlaege(&t, 21, false, false, &projekt()).unwrap();
+        let (anfang, v) = vorschlaege(&t, 21, false, Sprache::Luau, &projekt()).unwrap();
         einsetzen(&mut t, anfang, 21, &v[0]);
         assert_eq!(t, "timbre.play_sound(\"Muenze\", 0.5)");
     }
@@ -656,13 +765,43 @@ mod tests {
     #[test]
     fn signatur_hinweis() {
         let t = "timbre.set_position(spieler, ";
-        let (info, arg) = hinweis(t, t.chars().count()).unwrap();
+        let (info, arg) = hinweis(t, t.chars().count(), Sprache::Luau).unwrap();
         assert!(info.starts_with("timbre.set_position(id, x, y)"), "{info}");
         assert_eq!(arg, 1);
         let t = "task.delay(2, function() print(";
-        assert!(hinweis(t, t.chars().count()).unwrap().0.starts_with("print("));
-        assert!(hinweis("x = 1", 5).is_none());
+        assert!(hinweis(t, t.chars().count(), Sprache::Luau)
+            .unwrap()
+            .0
+            .starts_with("print("));
+        assert!(hinweis("x = 1", 5, Sprache::Luau).is_none());
         let t = "timbre.ui_text(\"a,b\", ";
-        assert_eq!(hinweis(t, t.chars().count()).unwrap().1, 1); // Komma im Text zählt nicht
+        assert_eq!(hinweis(t, t.chars().count(), Sprache::Luau).unwrap().1, 1); // Komma im Text zählt nicht
+    }
+
+    #[test]
+    fn python_vorschlaege() {
+        let py = |t: &str| -> Vec<String> {
+            vorschlaege(t, t.chars().count(), false, Sprache::Python, &projekt())
+                .map(|(_, v)| v.into_iter().map(|e| e.name).collect())
+                .unwrap_or_default()
+        };
+        assert!(py("as").contains(&"async".to_string()));
+        assert!(py("aw").contains(&"await".to_string()));
+        assert!(!py("fun").contains(&"function".to_string()));
+        assert_eq!(py("    await task.wa"), vec!["wait"]);
+        assert!(py("random.ra").contains(&"randint".to_string()));
+        assert_eq!(py("timbre.play_sound('M"), vec!["Muenze"]);
+        assert!(py("# timbre.").is_empty());
+        let t = "timbre.set_color(g, ";
+        assert_eq!(hinweis(t, t.chars().count(), Sprache::Python).unwrap().1, 1);
+        // In Lua ist # der Längen-Operator, kein Kommentar
+        let t = "local n = #liste + timbre.ti";
+        assert_eq!(
+            vorschlaege(t, t.chars().count(), false, Sprache::Lua, &projekt())
+                .unwrap()
+                .1[0]
+                .name,
+            "time"
+        );
     }
 }

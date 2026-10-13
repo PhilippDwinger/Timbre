@@ -21,7 +21,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - Lua / Luau: Interpreter als WASM-Gast (`assets/scripting/luau.wasm` bzw. `lua.wasm`, gebaut mit `tools/luau-gast/bauen.sh` bzw. `tools/lua-gast/bauen.sh` via zig; nutzen WebAssembly-Exceptions/exnref), laden Script-Quelltext zur Laufzeit. Sprache = Dateiendung (`.luau` / `.lua`, `projekt::Sprache`).
   - **Mehrere Sprachen gleichzeitig:** pro Sprache ein `ScriptMotor` (Hintergrund-Übersetzung) und beim ▶ eine `ScriptLaufzeit` (`Studio::laufzeiten`). Physik einmal pro Schritt, `beruehrungen_melden` an jede Laufzeit. `broadcast` geht über den Host auch an andere Sprachen (Import `nachricht` → `Kontext::ausgehend` → `Studio::nachrichten_verteilen` → Export `timbre_nachricht`; nur einfache Daten, max. 8 Runden pro Schritt). `shared` bleibt pro Sprache.
   - Script-API ist englisch (`timbre.spawn`, `timbre.set_position` …), Engine-Code deutsch. Doku für Nutzer: `docs/scripting.md`.
-  - Python: componentize-py (groß → lazy laden).
+  - **Python (geändert, begründet):** statt componentize-py **CPython 3.12 selbst als Core-Modul-Gast** mit derselben ABI (`tools/python-gast`: `gast.c` + `laufzeit.py`). Grund: componentize-py braucht das Component Model, das wir in M5 verlassen haben; so ist es echtes Python mit Standardbibliothek. Paddy: „mach wie es am besten passt“. Standardbibliothek als Zip im schreibgeschützten Speicher-Dateisystem des Hosts (`wasi.rs`). Warten = `async def` + `await task.wait(s)`. Gast wird nur bei Bedarf übersetzt und im Temp-Ordner zwischengespeichert.
   - Java: TeaVM → WASM; ggf. dünner Adapter nötig (Component-Model-Tooling für Java noch unreif).
   - Bonus-Sprachen: Rust, C, C++, C#, Go (TinyGo), Zig, AssemblyScript, JavaScript, Kotlin.
 - **Zweite Steuer-Ebene:** Timbre wird ein **Bridge-Client** in einem Realm und bietet Funktionen an (Szene laden, Objekt spawnen, Mesh exportieren …). Asynchron, für Fernsteuerung aus jeder Sprache mit Bridge-Extension.
@@ -43,6 +43,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - `crates/timbre-app` – **Timbre Studio** (Editor): `studio.rs` (Modi, Panels, Ausführen/Stopp), `projekt.rs` (Projektordner), `oberflaeche.rs` (egui ↔ winit/wgpu), `luau_farben.rs` (Syntaxfarben), `vervollstaendigung.rs` (Autovervollständigung).
 - `projekte/beispiel` – Beispielprojekt: `szene.tbr` + `scripts/*.luau` + `sounds/*.wav` (+ `texturen/*.tbr`, sobald etwas importiert wird). Studio startet standardmäßig damit (`cargo run -p timbre-app -- <ordner>` für andere).
 - `tools/luau-gast` – Luau → WebAssembly (nur bei Luau-/Gast-Änderungen nötig, Ergebnis liegt im Repo).
+- `tools/python-gast` – Python 3.12 → WebAssembly (lädt wasi-sdk 20 + libpython in `.cache/`, dünnt die Standardbibliothek aus). Script-API-Änderungen auch hier nachziehen (`gast.c` + `laufzeit.py`).
+- `crates/timbre-core/src/wasi.rs` – WASI-Funktionen für alle Gäste, schreibgeschütztes Speicher-Dateisystem.
 - `tools/lua-gast` – Lua 5.4 → WebAssembly, gleiche Logik wie der Luau-Gast (Änderungen an der Script-API immer in **beiden** `gast.cpp` nachziehen und beide neu bauen).
 - `crates/tbr` – Kommandozeilen-Werkzeug: `tbr info`, `tbr textur` (PNG), `tbr mesh` (glTF/GLB).
 - `assets/quellen` – Ausgangsdateien (PNG, glTF); `assets/texturen`, später `assets/meshes` – fertige `.tbr`.
@@ -61,7 +63,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
 3. [x] Asset-Format `.tbr` v0 (Mesh, Textur, Szene) – wichtigste Entscheidung, alles baut darauf auf
 4. [x] ECS
 5. [~] WASM-Scripting-Host (wasmtime) + erste Sprache: **Luau**, dann **Lua** – dazu Timbre Studio (Editor) – alles gebaut, Pakete 2–4 + Lua warten auf Paddys Validierung
-6. [ ] **Python**, dann **Java**
+6. [~] **Python** (gebaut, wartet auf Validierung), dann **Java**
 7. [ ] Bonus-Sprachen (Rust, C#, JS … zuerst die einfachen)
 8. [ ] Web-Build in Grove einbetten
 9. [ ] Timbre Carve (Mesh-Editor, Half-Edge-Datenstruktur)
@@ -138,6 +140,11 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - Danach (Paddy unterwegs, „mach weiter“) gebaut, wartet ebenfalls auf Validierung:
   - **Autovervollständigung erweitert:** Vorschläge **in Texten** – Sounds (`play_sound("`), Bilder (`set_sprite(id, "`), Objekte (`find("`, Vergleiche `== "`), Tasten (`key_down("`), Maustasten, Kollisionsformen, Nachrichten (aus allen `broadcast("…")` im Projekt). Übernehmen ergänzt das schließende `"`. **Signatur-Hinweis** über dem Cursor, solange er in den Klammern einer bekannten Funktion steht (mit Argument-Nummer). `Projektnamen` baut das Studio nur, wenn der Editor Fokus hat. 7 Tests.
   - **`broadcast` über Sprachgrenzen** (siehe Architektur). Beide Gäste neu gebaut. WIT v0.5 (`simple-value`). Test `nachrichten_zwischen_sprachen`. Beispiel: `Zeit.lua` zeigt „letztes Goldstück bei …“ nach der Luau-Nachricht `gesammelt`.
-  - Nächste Schritte: Paddy validiert → Meilenstein 5 abhaken. Danach Meilenstein 6: **Python** – Entscheidung offen (siehe unten), dann Java.
-  - **Offene Entscheidung Python:** Plan war componentize-py (Component Model, groß). Passt nicht mehr zur Core-Modul-ABI aus M5. Vorschlag Claude: CPython selbst als WASI-Gast mit derselben schmalen ABI (echtes Python 3, ~5–10 MB, lazy laden) statt componentize-py; Alternative: kleiner Interpreter (PocketPy/MicroPython, < 1 MB, aber nur Python-Teilmenge). Paddy fragen.
+- **Meilenstein 6, Schritt 1: Python 3** gebaut (Paddy: „mach wie es am besten passt“; in Claudes Testumgebung geprüft: `Funkeln.py` läuft neben Luau und Lua, empfängt `gesammelt` aus Luau, wartet mit `await task.wait`; wartet auf Validierung):
+  - Gast: CPython 3.12.0 als `libpython3.12.a` (WASI, VMware Labs „WebAssembly Language Runtimes“) + `gast.c` (Modul `timbre` per C-API, Exporte wie Luau) + `laufzeit.py` (eingebettet als Text: eigene Globals pro Script, `task` mit async/await, Fehler als `Script:Zeile: Typ: Text`, Live-Neuladen, `broadcast` lokal + über den Host). Eigene `_PyImport_Inittab` mit nur nötigen C-Modulen → 11,4 MB statt 19,5 MB. Standardbibliothek ausgedünnt (ohne Netz/GUI/Tests/CJK) → `python312.zip` 2,1 MB.
+  - Host: `wasi.rs` ersetzt die alten WASI-Stubs – alle preview1-Funktionen, Speicher-Dateisystem (fd 3 = `/`), stdout/stderr → Konsole, `random_get` per xorshift. `ScriptMotor::mit_dateien`. **Zwischenspeicher** für übersetzte Module (`%TEMP%\timbre-cache\*.cwasm`, Schlüssel = Hash aus Wasm + `precompile_compatibility_hash`) – zweiter Start sofort.
+  - Studio: `Sprache::Python` (`.py`), Motor nur bei Bedarf (`motor_vorbereiten` beim Laden/Anlegen/Wechseln), Syntaxfarben für Python (`luau_farben::layout(…, python)`), Autovervollständigung mit Python-Schlüsselwörtern/Builtins, `math.`/`random.`/`task.` für Python, `#`-Kommentare. Tests: 2 Python-Laufzeit-Tests, 1 WASI-Test, 1 Autovervollständigungs-Test.
+  - Beispielprojekt: `scripts/Funkeln.py` als Script-Objekt in `szene.tbr`.
+  - Pushen von Claudes Umgebung aus geht nicht (Repo ist für die Sitzung nicht freigegeben) – Paddy committet/pusht selbst.
+  - Nächste Schritte: Paddy validiert Meilenstein 5 + Python. Danach **Java** (Plan: TeaVM → WASM; prüfen, ob TeaVMs WASI-/GC-Ausgabe zur Core-Modul-ABI passt, sonst kleiner Java-Interpreter als Gast).
 
