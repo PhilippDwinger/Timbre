@@ -167,6 +167,150 @@ pub struct Script {
     pub aktiv: bool,
 }
 
+/// Property „Masse“: Bei Zusammenstößen weicht das leichtere Objekt mehr aus.
+/// `masselos` = zählt wie keine Masse (wird ganz weggeschoben, schiebt selbst nichts).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Masse {
+    pub wert: f32,
+    pub masselos: bool,
+}
+
+impl Default for Masse {
+    fn default() -> Self {
+        Self {
+            wert: 1.0,
+            masselos: false,
+        }
+    }
+}
+
+/// Eigene Größe der HitBox (Property „HitBox“). Fehlt sie, gilt die Bildgröße.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HitBoxGroesse(pub Vec2);
+
+/// Property „Scripts“: Diese Scripts (Dateinamen) laufen für dieses Objekt –
+/// jeweils als eigene Kopie, in der `script.object` dieses Objekt ist.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScriptVerweise(pub Vec<String>);
+
+/// Nur an Scripts: eigene Namen für die Ereignis-Funktionen (`on_start` → `starten` …).
+/// Schlüssel = Ereignis (`on_start`, `on_update`, `on_touch`, `on_message`), Wert = Funktionsname,
+/// leer = Ereignis aus. Fehlt ein Eintrag, gilt der Standardname.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ereignisse(pub std::collections::BTreeMap<String, String>);
+
+/// Nur an Scripts: Live-Script. Werte der Argumente pro `live`-Funktion (als Text, wie eingetippt).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Live(pub std::collections::BTreeMap<String, Vec<String>>);
+
+/// 3D-Lage eines Objekts (Property „Transform 3D“): Position, Drehung in Grad (X, Y, Z), Skala.
+/// Relativ zum nächsten Vorfahren mit `Raum` – wie `Transform` in 2D.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Raum {
+    pub position: glam::Vec3,
+    pub drehung: glam::Vec3,
+    pub skala: glam::Vec3,
+}
+
+impl Default for Raum {
+    fn default() -> Self {
+        Self {
+            position: glam::Vec3::ZERO,
+            drehung: glam::Vec3::ZERO,
+            skala: glam::Vec3::ONE,
+        }
+    }
+}
+
+impl Raum {
+    pub fn matrix(&self) -> glam::Mat4 {
+        let d = self.drehung * (std::f32::consts::PI / 180.0);
+        glam::Mat4::from_scale_rotation_translation(
+            self.skala,
+            glam::Quat::from_euler(glam::EulerRot::YXZ, d.y, d.x, d.z),
+            self.position,
+        )
+    }
+}
+
+/// Property „Mesh (3D)“: ein Körper mit Farbe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mesh3d {
+    pub form: crate::renderer3d::Form3d,
+    pub farbe: [f32; 4],
+}
+
+impl Default for Mesh3d {
+    fn default() -> Self {
+        Self {
+            form: crate::renderer3d::Form3d::Wuerfel,
+            farbe: [0.62, 0.82, 0.94, 1.0],
+        }
+    }
+}
+
+/// Welt-Matrix eines 3D-Objekts (mit allen Vorfahren, die `Raum` haben).
+pub fn welt_raum(welt: &Welt, o: Objekt) -> Option<glam::Mat4> {
+    let eigen = welt.get::<&Raum>(o).ok()?.matrix();
+    let mut m = eigen;
+    let mut aktuell = o;
+    let mut schritte = 0;
+    while let Ok(e) = welt.get::<&Eltern>(aktuell) {
+        aktuell = e.0;
+        schritte += 1;
+        if schritte > 256 {
+            break;
+        }
+        if let Ok(r) = welt.get::<&Raum>(aktuell) {
+            m = r.matrix() * m;
+        }
+    }
+    Some(m)
+}
+
+/// Welt-Matrix des nächsten Vorfahren mit `Raum` (sonst Einheitsmatrix).
+pub fn eltern_raum(welt: &Welt, o: Objekt) -> glam::Mat4 {
+    let mut aktuell = o;
+    for _ in 0..256 {
+        let Ok(e) = welt.get::<&Eltern>(aktuell).map(|e| e.0) else {
+            break;
+        };
+        if welt.get::<&Raum>(e).is_ok() {
+            return welt_raum(welt, e).unwrap_or(glam::Mat4::IDENTITY);
+        }
+        aktuell = e;
+    }
+    glam::Mat4::IDENTITY
+}
+
+/// Welt-Position eines 3D-Objekts setzen (wird in die Lage relativ zum Eltern-Raum umgerechnet).
+/// Objekte ohne `Raum` bekommen einen.
+pub fn welt_position3d_setzen(welt: &mut Welt, o: Objekt, p: glam::Vec3) {
+    let lokal = eltern_raum(welt, o).inverse().transform_point3(p);
+    let mut r = welt.get::<&Raum>(o).map(|r| *r).unwrap_or_default();
+    r.position = lokal;
+    let _ = welt.insert_one(o, r);
+}
+
+/// Alle 3D-Körper der Welt zum Zeichnen einsammeln.
+pub fn modelle_sammeln(welt: &Welt, ziel: &mut Vec<crate::renderer3d::Modell>) {
+    ziel.clear();
+    for (o, mesh) in welt.query::<(Objekt, &Mesh3d)>().iter() {
+        if let Some(matrix) = welt_raum(welt, o) {
+            ziel.push(crate::renderer3d::Modell {
+                form: mesh.form,
+                matrix,
+                farbe: mesh.farbe,
+                unbeleuchtet: false,
+            });
+        }
+    }
+}
+
+/// Laufende Kopie eines verlinkten Scripts (nur während ▶; im Explorer unsichtbar).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Instanz;
+
 // ---------------------------------------------------------------------------
 // Baum (Eltern / Kinder)
 // ---------------------------------------------------------------------------

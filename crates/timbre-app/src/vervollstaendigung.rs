@@ -91,6 +91,16 @@ const TIMBRE: &[(&str, &str)] = &[
     ("set_velocity(", "set_velocity(id, vx, vy [, drehen])"),
     ("set_sprite(", "set_sprite(id, textur, breite [, höhe, ebene])"),
     ("set_color(", "set_color(id, r, g, b [, a]) – 0 bis 1"),
+    ("set_position3d(", "set_position3d(id, x, y, z) – 3D, Weltkoordinaten"),
+    ("get_position3d(", "get_position3d(id) → x, y, z"),
+    ("set_rotation3d(", "set_rotation3d(id, x, y, z) – 3D, Grad"),
+    ("get_rotation3d(", "get_rotation3d(id) → x, y, z"),
+    ("set_scale3d(", "set_scale3d(id, x [, y, z])"),
+    ("get_scale3d(", "get_scale3d(id) → x, y, z"),
+    (
+        "set_mesh(",
+        "set_mesh(id, \"cube\" | \"sphere\" | \"plane\" | \"cylinder\" | nil [, r, g, b])",
+    ),
     ("set_parent(", "set_parent(id, eltern | nil)"),
     ("get_parent(", "get_parent(id) → id | nil"),
     ("get_name(", "get_name(id) → name"),
@@ -127,6 +137,10 @@ const SCRIPT: &[(&str, &str)] = &[
     ("name", "Name des Script-Objekts"),
     ("id", "Objekt-ID des Scripts"),
     ("parent", "Objekt, unter dem das Script hängt (oder nil)"),
+    (
+        "object",
+        "Objekt, für das dieses Script läuft (Property „Scripts“ oder Eltern-Objekt)",
+    ),
 ];
 
 const MATH: &[(&str, &str)] = &[
@@ -240,15 +254,15 @@ const PY_GLOBAL: &[(&str, &str)] = &[
 
 const PY_SCHLUESSELWOERTER: &[&str] = &[
     "False", "None", "True", "and", "as", "async", "await", "break", "class", "continue", "def", "elif", "else",
-    "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or",
-    "pass", "raise", "return", "try", "while", "with", "yield",
+    "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "live", "nonlocal", "not",
+    "or", "pass", "raise", "return", "try", "while", "with", "yield",
 ];
 
 // --- Luau / Lua --------------------------------------------------------------------------
 
 const SCHLUESSELWOERTER: &[&str] = &[
-    "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil",
-    "not", "or", "repeat", "return", "then", "true", "until", "while",
+    "and", "break", "continue", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "live", "local",
+    "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
 ];
 
 const GLOBAL: &[(&str, &str)] = &[
@@ -573,6 +587,12 @@ fn text_vorschlaege(
                 .iter()
                 .map(|t| (t.to_string(), "Maustaste"))
                 .collect(),
+            ("set_mesh", 1) => vec![
+                ("cube".to_string(), "Würfel"),
+                ("sphere".to_string(), "Kugel"),
+                ("plane".to_string(), "Ebene"),
+                ("cylinder".to_string(), "Zylinder"),
+            ],
             ("set_collision", 1) => vec![
                 ("circle".to_string(), "Form: Kreis"),
                 ("box".to_string(), "Form: Rechteck"),

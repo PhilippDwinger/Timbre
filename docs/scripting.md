@@ -41,6 +41,77 @@ Weitere Funktionen, die Timbre aufruft, wenn es sie gibt:
 Jedes Script hat seine eigenen Variablen – zwei Scripts sehen die Variablen des anderen nicht.
 Für Gemeinsames gibt es die Tabelle **`shared`** (z. B. `shared.punkte = 0`), die alle Scripts sehen.
 
+### Eigene Namen für die Ereignis-Funktionen
+
+Die Namen `on_start`, `on_update`, `on_touch` und `on_message` sind nur die Standardwerte. In den
+**Eigenschaften eines Scripts** (Block „Ereignisse“) kannst du für jedes Ereignis den Namen einer
+eigenen Funktion eintragen – die Funktionen des Scripts werden beim Tippen vorgeschlagen.
+Leeres Feld = Ereignis aus. Gespeichert wird das in der Szene, der Quelltext bleibt unverändert.
+
+```lua
+-- Eigenschaften → Ereignisse → Update: jede_frame
+function jede_frame(dt)
+	...
+end
+```
+
+Beispiel: `Zeit.lua` im Beispielprojekt nutzt `jede_frame` statt `on_update`.
+
+## Live-Scripts: Funktionen ohne ▶ ausführen
+
+Schalte in den Eigenschaften eines Scripts **Live** ein. Dann darf in diesem Script **direkt vor**
+`function` (Luau/Lua) bzw. `def` (Python) das Wort `live` stehen:
+
+```lua
+live function pflanze_ring(anzahl, radius, groesse)
+	...
+end
+```
+
+```python
+live def pflanze_ring(anzahl, radius, groesse):
+    ...
+```
+
+Für jede `live`-Funktion zeigt das Script in den Eigenschaften einen Block mit **einem Feld pro
+Argument** und dem Knopf **▶ Run**. Run ruft die Funktion sofort mit diesen Werten auf – im
+Bearbeiten-Modus, ohne das Spiel zu starten. Was die Funktion erzeugt, bleibt in der Szene (und ist
+mit Strg+Z rückgängig zu machen). Ideal für Generatoren: Wälder, Level, Muster …
+
+Feldwerte: Zahlen bleiben Zahlen (auch `3,5`), `true`/`false` (oder `wahr`/`falsch`) werden
+Wahrheitswerte, leer = `nil`/`None`, alles andere ist Text.
+
+Beispiel: `Wald.luau` im Beispielprojekt (`pflanze_ring`, `faellen`).
+
+## Properties und verknüpfte Scripts
+
+Neue Objekte („+ Objekt“) sind **leer**: nur Name, Position und Eltern. Alles andere sind
+**Properties**, die man in den Eigenschaften über **„+ Property hinzufügen“** anhängt (wie
+Komponenten in Unity) und mit 🗙 wieder entfernt:
+
+| Property | Bedeutung |
+|---|---|
+| 🖼 Bild | Textur, Größe, Farbe, Ebene |
+| HitBox | Kollision: Form, eigene Größe (sonst Bildgröße), Fest, Verankert |
+| ⚖ Masse | Masse in kg; **Masselos** (dann ist das Masse-Feld ausgegraut) = wird ganz weggeschoben, schiebt selbst nichts. Bei Zusammenstößen weicht das leichtere Objekt mehr aus |
+| Bewegung | Tempo und Drehen, bewegt sich beim Ausführen von selbst |
+| 📜 Scripts | Scripts, die **für dieses Objekt** laufen (siehe unten) |
+| 📐 Transform 3D | Position, Drehung (Grad) und Skala im 3D-Raum |
+| 🔷 Mesh (3D) | 3D-Körper: Würfel, Kugel, Ebene oder Zylinder, mit Farbe |
+
+**Property „Scripts“:** Ein Script, das hier verknüpft ist, läuft beim ▶ für jedes verknüpfte
+Objekt als **eigene Kopie** – in jeder Kopie ist `script.object` das jeweilige Objekt. So schreibt
+man ein Verhalten einmal und gibt es vielen Objekten:
+
+```lua
+-- Drehen.lua, verknüpft mit Baumstumpf 1, 3 und 5
+function on_update(dt)
+	timbre.set_rotation(script.object, timbre.get_rotation(script.object) + dt)
+end
+```
+
+Ein verknüpftes Script läuft nicht zusätzlich für sich allein.
+
 ## Warten und Zeitabläufe (`task`)
 
 Wie in Roblox:
@@ -67,6 +138,7 @@ Jedes Script kennt sich selbst über `script`:
 | `script.name` | Name des Script-Objekts |
 | `script.id` | Objekt-ID des Scripts |
 | `script.parent` | Objekt, unter dem das Script hängt (oder `nil`) – wie `script.Parent` in Roblox |
+| `script.object` | Das Objekt, für das das Script läuft: bei verknüpften Scripts (Property „Scripts“, siehe unten) das jeweilige Objekt, sonst gleich `script.parent` |
 
 Wird das Script-Objekt gelöscht (z. B. zusammen mit seinem Eltern-Objekt), hört das Script auf.
 Fehler stehen rot in der Konsole (mit Datei und Zeile). Ein Script mit Fehler in `on_update`
@@ -106,6 +178,27 @@ Objekte sind Zahlen (IDs). `print(...)` schreibt in die Konsole.
 | `timbre.key_pressed(taste)` → bool | Taste in diesem Schritt neu gedrückt |
 | `timbre.mouse_position()` → x, y | Maus in Weltkoordinaten |
 | `timbre.set_camera(x, y [, zoom])` | Kamera setzen |
+
+### 3D
+
+| Funktion | Bedeutung |
+|---|---|
+| `timbre.set_mesh(id, form [, r, g, b])` | 3D-Körper geben: `"cube"`, `"sphere"`, `"plane"`, `"cylinder"` (`nil` = entfernen); Farbe 0–1 |
+| `timbre.set_position3d(id, x, y, z)` | Position im Raum (Welt, y = oben) |
+| `timbre.get_position3d(id)` → x, y, z | Position lesen (`nil`, wenn das Objekt nicht in 3D ist) |
+| `timbre.set_rotation3d(id, x, y, z)` | Drehung in **Grad** um X, Y, Z |
+| `timbre.get_rotation3d(id)` → x, y, z | Drehung lesen |
+| `timbre.set_scale3d(id, x [, y, z])` | Skala (eine Zahl = in alle Richtungen) |
+| `timbre.get_scale3d(id)` → x, y, z | Skala lesen |
+
+```lua
+local k = timbre.spawn("Turm")
+timbre.set_mesh(k, "cylinder", 0.6, 0.8, 1)
+timbre.set_position3d(k, 0, 2, 0)
+timbre.set_scale3d(k, 1, 4, 1)
+```
+
+3D-Objekte sieht man in der **3D-Ansicht** (oben in der Leiste: 2D / 3D). Eine Einheit ≈ ein Meter.
 
 Tastennamen: `"A"`–`"Z"`, `"0"`–`"9"`, `"Space"`, `"Enter"`, `"Escape"`, `"Shift"`, `"Ctrl"`,
 `"Tab"`, `"Up"`, `"Down"`, `"Left"`, `"Right"` (Groß-/Kleinschreibung egal).

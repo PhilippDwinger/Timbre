@@ -12,7 +12,7 @@ pub struct Oberflaeche {
 impl Oberflaeche {
     pub fn new(window: &Window, renderer: &Renderer) -> Self {
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
+        crate::eis::anwenden(&ctx);
         let zustand = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,

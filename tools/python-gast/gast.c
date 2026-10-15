@@ -12,6 +12,7 @@
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,9 @@ IMPORT("set_rotation") void h_set_rotation(int64_t id, float r);
 IMPORT("get_rotation") float h_get_rotation(int64_t id);
 IMPORT("set_scale") void h_set_scale(int64_t id, float x, float y);
 IMPORT("set_velocity") void h_set_velocity(int64_t id, float vx, float vy, float dreh);
+IMPORT("set3d") void h_set3d(int64_t id, int32_t was, float x, float y, float z);
+IMPORT("get3d") int32_t h_get3d(int64_t id, int32_t was, float* aus);
+IMPORT("set_mesh") void h_set_mesh(int64_t id, const char* p, int32_t n, float r, float g, float b);
 IMPORT("set_sprite") int32_t h_set_sprite(int64_t id, const char* p, int32_t n, float b, float h, int32_t ebene);
 IMPORT("set_color") void h_set_color(int64_t id, float r, float g, float b, float a);
 IMPORT("key_down") int32_t h_key_down(const char* p, int32_t n);
@@ -362,6 +366,34 @@ static PyObject* t_nachricht(PyObject* self, PyObject* args) {
 
 static PyObject* t_broadcast(PyObject* self, PyObject* args); // weiter unten (ruft laufzeit.broadcast)
 
+// --- 3D -------------------------------------------------------------------
+static PyObject* setze3d(PyObject* args, int32_t was) {
+    PyObject* o; float x, y = NAN, z = NAN;
+    if (!PyArg_ParseTuple(args, "Of|ff", &o, &x, &y, &z)) return NULL;
+    if (isnan(y)) y = was == 2 ? x : 0;
+    if (isnan(z)) z = was == 2 ? x : 0;
+    h_set3d(id_von(o), was, x, y, z);
+    Py_RETURN_NONE;
+}
+static PyObject* lies3d(PyObject* args, int32_t was) {
+    PyObject* o; float v[3];
+    if (!PyArg_ParseTuple(args, "O", &o)) return NULL;
+    if (!h_get3d(id_von(o), was, v)) Py_RETURN_NONE;
+    return Py_BuildValue("(ddd)", (double)v[0], (double)v[1], (double)v[2]);
+}
+static PyObject* t_set_position3d(PyObject* self, PyObject* args) { return setze3d(args, 0); }
+static PyObject* t_set_rotation3d(PyObject* self, PyObject* args) { return setze3d(args, 1); }
+static PyObject* t_set_scale3d(PyObject* self, PyObject* args) { return setze3d(args, 2); }
+static PyObject* t_get_position3d(PyObject* self, PyObject* args) { return lies3d(args, 0); }
+static PyObject* t_get_rotation3d(PyObject* self, PyObject* args) { return lies3d(args, 1); }
+static PyObject* t_get_scale3d(PyObject* self, PyObject* args) { return lies3d(args, 2); }
+static PyObject* t_set_mesh(PyObject* self, PyObject* args) {
+    PyObject* o; const char* s = NULL; Py_ssize_t n = 0; float r = 0.55f, g = 0.78f, b = 0.95f;
+    if (!PyArg_ParseTuple(args, "Oz#|fff", &o, &s, &n, &r, &g, &b)) return NULL;
+    h_set_mesh(id_von(o), s ? s : "", (int32_t)n, r, g, b);
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef timbre_funktionen[] = {
     {"log", t_log, METH_VARARGS, "log(...) – Text in die Konsole"},
     {"time", t_time, METH_NOARGS, "time() → Sekunden seit ▶"},
@@ -391,6 +423,13 @@ static PyMethodDef timbre_funktionen[] = {
     {"ui_clear", t_ui_clear, METH_VARARGS, "ui_clear(schluessel=None) – ohne: alle"},
     {"play_sound", t_play_sound, METH_VARARGS, "play_sound(name, lautstaerke=1, schleife=False)"},
     {"stop_sounds", t_stop_sounds, METH_VARARGS, "stop_sounds(name=None) – ohne: alle"},
+    {"set_position3d", t_set_position3d, METH_VARARGS, "set_position3d(id, x, y, z) – Weltkoordinaten"},
+    {"get_position3d", t_get_position3d, METH_VARARGS, "get_position3d(id) → (x, y, z)"},
+    {"set_rotation3d", t_set_rotation3d, METH_VARARGS, "set_rotation3d(id, x, y, z) – Grad"},
+    {"get_rotation3d", t_get_rotation3d, METH_VARARGS, "get_rotation3d(id) → (x, y, z)"},
+    {"set_scale3d", t_set_scale3d, METH_VARARGS, "set_scale3d(id, x, y=x, z=x)"},
+    {"get_scale3d", t_get_scale3d, METH_VARARGS, "get_scale3d(id) → (x, y, z)"},
+    {"set_mesh", t_set_mesh, METH_VARARGS, "set_mesh(id, \"cube\" | \"sphere\" | \"plane\" | \"cylinder\" | None, r, g, b)"},
     {"broadcast", t_broadcast, METH_VARARGS, "broadcast(nachricht, daten=None) → on_message in allen Scripts"},
     {"_fehler", t_fehler, METH_VARARGS, NULL},
     {"_nachricht", t_nachricht, METH_VARARGS, NULL},

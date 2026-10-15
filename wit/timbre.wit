@@ -1,10 +1,10 @@
-// Timbre Script-Schnittstelle – v0.5 (Sounds, Nachrichten zwischen Sprachen)
+// Timbre Script-Schnittstelle – v0.6 (3D: Position/Drehung/Skala, Körper)
 //
 // Beschreibung der Funktionen, die Scripts in jeder Sprache bekommen.
 // Technisch sind die Gäste derzeit einfache WebAssembly-Core-Module mit schmaler
 // C-Schnittstelle (siehe docs/scripting-abi.md) – diese Datei ist die sprachneutrale
 // Beschreibung derselben Funktionen.
-package timbre:engine@0.5.0;
+package timbre:engine@0.6.0;
 
 interface host {
     /// Daten, die eine Nachricht zwischen Sprachen tragen kann.
@@ -39,6 +39,17 @@ interface host {
     /// false, wenn es die Textur nicht gibt.
     set-sprite: func(entity: u64, texture: string, width: f32, height: f32, layer: s32) -> bool;
     set-color: func(entity: u64, r: f32, g: f32, b: f32, a: f32);
+
+    /// 3D: Position in Weltkoordinaten, Drehung in Grad (X, Y, Z) und Skala relativ zum Eltern-Objekt.
+    set-position3d: func(entity: u64, x: f32, y: f32, z: f32);
+    get-position3d: func(entity: u64) -> option<tuple<f32, f32, f32>>;
+    set-rotation3d: func(entity: u64, x: f32, y: f32, z: f32);
+    get-rotation3d: func(entity: u64) -> option<tuple<f32, f32, f32>>;
+    set-scale3d: func(entity: u64, x: f32, y: f32, z: f32);
+    get-scale3d: func(entity: u64) -> option<tuple<f32, f32, f32>>;
+    enum mesh-shape { cube, sphere, plane, cylinder }
+    /// none = Körper entfernen
+    set-mesh: func(entity: u64, shape: option<mesh-shape>, r: f32, g: f32, b: f32);
 
     /// Eingabe
     key-down: func(key: string) -> bool;

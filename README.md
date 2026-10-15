@@ -1,6 +1,8 @@
 # Timbre
 
-Eigene Engine in Rust – nativ und im Browser, Scripting in Lua, Luau, Python, Java und vielen weiteren Sprachen.
+![Timbre](assets/marke/banner.png)
+
+Eigene Engine in Rust – 2D und 3D, nativ und im Browser, Scripting in Lua, Luau, Python, Java und vielen weiteren Sprachen.
 Teil der Grove-Welt.
 
 ## Timbre Studio starten (Windows)
@@ -31,6 +33,14 @@ Der allererste Build dauert einige Minuten (Grafik, Scripting und Oberfläche we
 | Mausrad | Zoomen |
 | WASD | Ansicht schieben (im Bearbeiten-Modus) |
 | Entf | Ausgewähltes Objekt löschen |
+| Explorer: **+ Objekt** | Neues **leeres** Objekt (nur Name, Position, Eltern) |
+| Eigenschaften: **+ Property hinzufügen** | Bild, HitBox, Masse, Bewegung, Scripts, Transform 3D, Mesh (3D) – jedes als eigener Block, 🗙 entfernt es |
+| Script-Eigenschaften: **⚑ Ereignisse** | Eigene Funktionsnamen statt `on_start`, `on_update` … (mit Vorschlägen) |
+| Script-Eigenschaften: **⚡ Live-Script** | `live function …` / `live def …`: Argumente werden Felder, **▶ Run** ruft die Funktion ohne Spielstart auf |
+| Leiste: **2D / 3D** | Ansicht umschalten |
+| Explorer: **+ Körper** | Würfel, Kugel, Ebene oder Zylinder (3D) |
+| 3D: rechte Maus / Mitte / Rad | Kamera drehen / schieben / zoomen (Umschalt+rechts = schieben) |
+| 3D: Körper ziehen | Waagerecht verschieben, mit **Umschalt** hoch/runter; Gitter an = auf 0,5 einrasten |
 | **PNG ins Fenster ziehen** | Wird zum Bild (`texturen/<name>.tbr` im Projekt) und landet als Objekt mitten in der Szene |
 | **WAV / OGG / MP3 / FLAC ins Fenster ziehen** | Wird zum Sound (`sounds/` im Projekt), im Script: `timbre.play_sound("Name")` |
 | Explorer: **🖼 Bilder** / **🔊 Sounds** | Alle Bilder (klicken = in die Szene setzen) und Sounds (▶ = anhören) des Projekts |

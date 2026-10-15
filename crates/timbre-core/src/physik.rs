@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet};
 
 use glam::Vec2;
 
-use crate::welt::{welt_transform, welt_transform_setzen, Bewegung, Bild, Form, Kollision, Objekt, Welt};
+use crate::welt::{
+    welt_transform, welt_transform_setzen, Bewegung, Bild, Form, HitBoxGroesse, Kollision, Masse, Objekt, Welt,
+};
 
 /// Form eines Objekts in der Welt.
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +27,8 @@ struct Teilnehmer {
     o: Objekt,
     koerper: Koerper,
     k: Kollision,
+    /// 1 / Masse – je größer, desto mehr weicht das Objekt aus
+    inv_masse: f32,
 }
 
 /// Überlappen sich a und b? Liefert die Richtung von a nach b und wie tief sie ineinander stecken.
@@ -76,12 +80,29 @@ fn ueberlappung(a: &Koerper, b: &Koerper) -> Option<(Vec2, f32)> {
     }
 }
 
-/// Alle Objekte mit Kollision und Bild einsammeln.
+/// Alle Objekte mit Kollision einsammeln. Größe = eigene HitBox-Größe, sonst Bildgröße.
 fn teilnehmer(welt: &Welt) -> Vec<Teilnehmer> {
     let mut v = Vec::new();
-    for (o, k, bild) in welt.query::<(Objekt, &Kollision, &Bild)>().iter() {
+    for (o, k, bild, hitbox, masse) in welt
+        .query::<(
+            Objekt,
+            &Kollision,
+            Option<&Bild>,
+            Option<&HitBoxGroesse>,
+            Option<&Masse>,
+        )>()
+        .iter()
+    {
         let Some(t) = welt_transform(welt, o) else { continue };
-        let groesse = (bild.groesse * t.skala).abs();
+        let Some(basis) = hitbox.map(|h| h.0).or(bild.map(|b| b.groesse)) else {
+            continue;
+        };
+        let groesse = (basis * t.skala).abs();
+        let inv_masse = match masse {
+            Some(m) if m.masselos => 1e6,
+            Some(m) => 1.0 / m.wert.max(1e-3),
+            None => 1.0,
+        };
         let koerper = match k.form {
             Form::Kreis => Koerper::Kreis {
                 mitte: t.position,
@@ -92,7 +113,12 @@ fn teilnehmer(welt: &Welt) -> Vec<Teilnehmer> {
                 halb: groesse * 0.5,
             },
         };
-        v.push(Teilnehmer { o, koerper, k: *k });
+        v.push(Teilnehmer {
+            o,
+            koerper,
+            k: *k,
+            inv_masse,
+        });
     }
     v
 }
@@ -130,7 +156,11 @@ pub fn schritt(welt: &mut Welt) -> Vec<Paar> {
                 let (anteil_a, anteil_b) = match (a.k.verankert, b.k.verankert) {
                     (true, false) => (0.0, 1.0),
                     (false, true) => (1.0, 0.0),
-                    _ => (0.5, 0.5),
+                    _ => {
+                        // Das leichtere Objekt weicht mehr aus
+                        let summe = a.inv_masse + b.inv_masse;
+                        (a.inv_masse / summe, b.inv_masse / summe)
+                    }
                 };
                 let verschiebung_a = -richtung * tiefe * anteil_a;
                 let verschiebung_b = richtung * tiefe * anteil_b;
@@ -203,6 +233,38 @@ mod tests {
             Bild::new(TexturId::test(0), Vec2::splat(groesse)),
             k,
         ))
+    }
+
+    #[test]
+    fn schweres_objekt_schiebt_leichtes_weg() {
+        let mut welt = Welt::new();
+        let k = Kollision {
+            form: Form::Kreis,
+            fest: true,
+            verankert: false,
+        };
+        let schwer = objekt(&mut welt, 0.0, 40.0, k);
+        let leicht = objekt(&mut welt, 30.0, 40.0, k);
+        welt.insert_one(
+            schwer,
+            Masse {
+                wert: 9.0,
+                masselos: false,
+            },
+        )
+        .unwrap();
+        // Leeres Objekt mit eigener HitBox (ohne Bild) zählt auch
+        let leer = welt.spawn((
+            Transform::bei(Vec2::new(500.0, 0.0)),
+            k,
+            HitBoxGroesse(Vec2::splat(10.0)),
+        ));
+        let _ = leer;
+        schritt(&mut welt);
+        let x = |o| welt.get::<&Transform>(o).unwrap().position.x;
+        // 10 Einheiten Überlappung: schwer weicht 1 aus, leicht 9
+        assert!((x(schwer) + 1.0).abs() < 0.01, "schwer: {}", x(schwer));
+        assert!((x(leicht) - 39.0).abs() < 0.01, "leicht: {}", x(leicht));
     }
 
     #[test]

@@ -7,13 +7,13 @@ use egui::{Color32, FontId, Galley, Ui};
 
 const SCHLUESSELWOERTER: &[&str] = &[
     "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
-    "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
+    "live", "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
 ];
 
 const PYTHON_SCHLUESSELWOERTER: &[&str] = &[
     "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
-    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "live",
+    "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
 ];
 
 struct Farben {

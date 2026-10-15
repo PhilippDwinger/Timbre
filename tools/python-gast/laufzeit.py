@@ -29,14 +29,16 @@ class _Script:
 
 
 class _ScriptInfo:
-    """`script` in jedem Script: script.name, script.id, script.parent"""
+    """`script` in jedem Script: script.name, script.id, script.parent, script.object"""
 
-    __slots__ = ("name", "id", "parent")
+    __slots__ = ("name", "id", "parent", "object")
 
     def __init__(self, name, sid, parent):
         self.name = name
         self.id = sid
         self.parent = parent
+        # Das Objekt, für das dieses Script läuft (Property „Scripts“ oder Eltern-Objekt)
+        self.object = parent
 
     def __repr__(self):
         return f"<Script {self.name}>"

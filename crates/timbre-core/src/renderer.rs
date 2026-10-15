@@ -14,11 +14,11 @@ use wgpu::util::DeviceExt;
 
 use crate::kamera::Kamera2d;
 
-/// Hintergrundfarbe (dunkles Holz, passend zu Grove).
+/// Hintergrundfarbe: Polarnacht-Blau (#0E1B2A, als lineare Farbe) – passend zum Eis-Stil des Studios.
 const HINTERGRUND: wgpu::Color = wgpu::Color {
-    r: 0.012,
-    g: 0.008,
-    b: 0.006,
+    r: 0.0044,
+    g: 0.0109,
+    b: 0.0232,
     a: 1.0,
 };
 

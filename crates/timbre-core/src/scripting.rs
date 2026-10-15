@@ -22,7 +22,7 @@ use crate::physik::{self, Beruehrungen, Paar};
 use crate::renderer::TexturId;
 use crate::welt::{
     eltern_setzen, entfernen, objekt_aus_nummer, objekt_nummer, welt_transform, welt_transform_setzen, Bewegung, Bild,
-    Eltern, Form, Kollision, Name, Objekt, Transform, Welt,
+    Eltern, Form, Kollision, Mesh3d, Name, Objekt, Raum, Transform, Welt,
 };
 
 /// Wie viele WebAssembly-Anweisungen ein Aufruf höchstens ausführen darf.
@@ -581,6 +581,76 @@ pub fn importe_registrieren(l: &mut Linker<Kontext>) -> wasmtime::Result<()> {
     l.func_wrap(M, "set_scale", |mut c: Caller<'_, Kontext>, id: i64, x: f32, y: f32| {
         aendern::<Transform>(&mut c, id, |t| t.skala = Vec2::new(x, y));
     })?;
+    // 3D: `was` = 0 Position (Welt), 1 Drehung (Grad, eigene), 2 Skala (eigene)
+    l.func_wrap(
+        M,
+        "set3d",
+        |mut c: Caller<'_, Kontext>, id: i64, was: i32, x: f32, y: f32, z: f32| {
+            let Some(o) = objekt(id) else { return };
+            let welt = &mut c.data_mut().welt;
+            let v = glam::Vec3::new(x, y, z);
+            if was == 0 {
+                crate::welt::welt_position3d_setzen(welt, o, v);
+                return;
+            }
+            if welt.get::<&Raum>(o).is_err() {
+                let _ = welt.insert_one(o, Raum::default());
+            }
+            if let Ok(mut r) = welt.get::<&mut Raum>(o) {
+                match was {
+                    1 => r.drehung = v,
+                    2 => r.skala = v,
+                    _ => {}
+                }
+            }
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "get3d",
+        |mut c: Caller<'_, Kontext>, id: i64, was: i32, aus: i32| -> wasmtime::Result<i32> {
+            let welt = &c.data().welt;
+            let Some(o) = objekt(id).filter(|o| welt.get::<&Raum>(*o).is_ok()) else {
+                return Ok(0);
+            };
+            let v = match was {
+                0 => crate::welt::welt_raum(welt, o)
+                    .map(|m| m.w_axis.truncate())
+                    .unwrap_or_default(),
+                1 => welt.get::<&Raum>(o).map(|r| r.drehung).unwrap_or_default(),
+                _ => welt.get::<&Raum>(o).map(|r| r.skala).unwrap_or(glam::Vec3::ONE),
+            };
+            floats_schreiben(&mut c, aus, &v.to_array())?;
+            Ok(1)
+        },
+    )?;
+    l.func_wrap(
+        M,
+        "set_mesh",
+        |mut c: Caller<'_, Kontext>, id: i64, p: i32, n: i32, r: f32, g: f32, b: f32| -> wasmtime::Result<()> {
+            let form = text(&mut c, p, n)?;
+            let Some(o) = objekt(id) else { return Ok(()) };
+            let welt = &mut c.data_mut().welt;
+            match crate::renderer3d::Form3d::aus_schluessel(&form) {
+                Some(form) => {
+                    if welt.get::<&Raum>(o).is_err() {
+                        let _ = welt.insert_one(o, Raum::default());
+                    }
+                    let _ = welt.insert_one(
+                        o,
+                        Mesh3d {
+                            form,
+                            farbe: [r, g, b, 1.0],
+                        },
+                    );
+                }
+                None => {
+                    let _ = welt.remove_one::<Mesh3d>(o);
+                }
+            }
+            Ok(())
+        },
+    )?;
     l.func_wrap(
         M,
         "set_velocity",
@@ -1129,6 +1199,69 @@ def on_update(dt):
                 daten: Wert::Zahl(1.5)
             }]
         );
+    }
+
+    #[test]
+    fn script_object_in_allen_sprachen() {
+        let mut welt = Welt::new();
+        let kiste = welt.spawn((Name("Kiste".into()), Transform::default()));
+        for (mut l, quelle) in [
+            (
+                laufzeit().0,
+                "print(timbre.get_name(script.object), script.object == script.parent)",
+            ),
+            (
+                lua_laufzeit().0,
+                "print(timbre.get_name(script.object), script.object == script.parent)",
+            ),
+            (
+                python_laufzeit().0,
+                "print(timbre.get_name(script.object), script.object == script.parent)",
+            ),
+        ] {
+            assert!(l.script_laden(&mut welt, "s", quelle, None, Some(kiste)));
+            let m = meldungen(&mut l);
+            assert!(
+                m == vec![Meldung::Info("Kiste true".into())] || m == vec![Meldung::Info("Kiste True".into())],
+                "{m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dreid_in_allen_sprachen() {
+        let lua_quelle = "local k = timbre.spawn('Ball')\ntimbre.set_mesh(k, 'sphere', 1, 0, 0)\ntimbre.set_position3d(k, 1, 2, 3)\ntimbre.set_scale3d(k, 2)\ntimbre.set_rotation3d(k, 0, 90, 0)\nlocal x, y, z = timbre.get_position3d(k)\nlocal sx, sy, sz = timbre.get_scale3d(k)\nprint(x, y, z, sx, sz)";
+        let py_quelle = "k = timbre.spawn('Ball')\ntimbre.set_mesh(k, 'sphere', 1, 0, 0)\ntimbre.set_position3d(k, 1, 2, 3)\ntimbre.set_scale3d(k, 2)\ntimbre.set_rotation3d(k, 0, 90, 0)\nx, y, z = timbre.get_position3d(k)\nsx, sy, sz = timbre.get_scale3d(k)\nprint(int(x), int(y), int(z), int(sx), int(sz))";
+        for (mut l, mut welt, quelle) in [
+            {
+                let (l, w) = laufzeit();
+                (l, w, lua_quelle)
+            },
+            {
+                let (l, w) = lua_laufzeit();
+                (l, w, lua_quelle)
+            },
+            {
+                let (l, w) = python_laufzeit();
+                (l, w, py_quelle)
+            },
+        ] {
+            assert!(l.script_laden(&mut welt, "s", quelle, None, None));
+            let m = meldungen(&mut l);
+            let text = match &m[..] {
+                [Meldung::Info(t)] => t.replace(".0", ""),
+                _ => panic!("{m:?}"),
+            };
+            assert_eq!(
+                text.split_whitespace().collect::<Vec<_>>(),
+                ["1", "2", "3", "2", "2"],
+                "{m:?}"
+            );
+            let mut q = welt.query::<(&crate::welt::Mesh3d, &Raum)>();
+            let (mesh, raum) = q.iter().next().expect("Körper fehlt");
+            assert_eq!(mesh.form, crate::renderer3d::Form3d::Kugel);
+            assert_eq!(raum.drehung, glam::Vec3::new(0.0, 90.0, 0.0));
+        }
     }
 
     #[test]

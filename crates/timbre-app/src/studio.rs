@@ -14,14 +14,24 @@
 use std::collections::HashMap;
 
 use egui::{Color32, Key, Modifiers, PointerButton, RichText, Sense, Stroke};
+use timbre_core::glam;
 use timbre_core::tbr::{self, AssetId};
-use timbre_core::welt::{self, Bewegung, Bild, Eltern, Form, Kollision, Name, Objekt, Script, Transform, Welt};
+use timbre_core::welt::{
+    self, Bewegung, Bild, Eltern, Ereignisse, Form, HitBoxGroesse, Instanz, Kollision, Live, Masse, Mesh3d, Name,
+    Objekt, Raum, Script, ScriptVerweise, Transform, Welt,
+};
 use timbre_core::{
     szene, vec2, Assets, Bereich, FrameStatistik, Input, Kamera2d, KeyCode, Renderer, Sprite, TexturId, Vec2,
 };
+use timbre_core::{Form3d, Kamera3d, Modell};
 
+use crate::eis;
+
+mod ansicht3d;
 use crate::luau_farben;
+use crate::marke::{self, Marke};
 use crate::projekt::{self, ProjektInhalt, Sprache};
+use crate::script_quelle;
 use crate::vervollstaendigung;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,9 +40,11 @@ use timbre_core::audio::Audio;
 use timbre_core::scripting::{BildschirmText, Meldung, ScriptLaufzeit, ScriptMotor, SoundBefehl};
 
 /// Eingebaute Texturen – dazu kommen die des Projekts (`texturen/*.tbr`).
-const TEXTUREN: [&[u8]; 2] = [
+const TEXTUREN: [&[u8]; 4] = [
     include_bytes!("../../../assets/texturen/jahresringe.tbr"),
     include_bytes!("../../../assets/texturen/blatt.tbr"),
+    include_bytes!("../../../assets/texturen/eisscholle.tbr"),
+    include_bytes!("../../../assets/texturen/schneeflocke.tbr"),
 ];
 
 /// Die Script-Sprachen als WebAssembly-Module (gebaut mit tools/luau-gast/bauen.sh bzw. tools/lua-gast/bauen.sh).
@@ -189,6 +201,17 @@ pub struct Studio {
     konflikte: HashMap<String, String>,
     /// Autovervollständigung im Script-Editor (offen, wenn `Some`)
     vorschlag: Option<vervollstaendigung::Offen>,
+    /// Logo & Startbild (beim ersten Frame geladen)
+    marke: Option<Marke>,
+    /// Seit wann das Studio läuft (für die Startanimation)
+    gestartet_um: web_time::Instant,
+    startanimation: bool,
+    /// Szene in 3D statt 2D anzeigen und bearbeiten
+    ansicht3d: bool,
+    kamera3d: Kamera3d,
+    modelle: Vec<Modell>,
+    /// Beim Ziehen in 3D: Objekt, Abstand Treffpunkt → Objekt, Höhe der Zieh-Ebene
+    ziehen3d: Option<(Objekt, glam::Vec3, f32)>,
 }
 
 impl Studio {
@@ -248,6 +271,10 @@ impl Studio {
             sprung: None,
             gitter: false,
             gitter_groesse: 32.0,
+            ansicht3d: false,
+            kamera3d: Kamera3d::default(),
+            modelle: Vec::new(),
+            ziehen3d: None,
             griff: None,
             maus_ueber_szene: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -258,6 +285,9 @@ impl Studio {
             platte_geprueft: web_time::Instant::now(),
             konflikte: HashMap::new(),
             vorschlag: None,
+            marke: None,
+            gestartet_um: web_time::Instant::now(),
+            startanimation: true,
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(e) = audio_fehler {
@@ -349,6 +379,60 @@ impl Studio {
                 anzahl_scripts
             ),
         );
+    }
+
+    /// Quelltext eines Script-Objekts so, wie er in der Laufzeit läuft (ohne `live`, mit eigenen
+    /// Ereignis-Namen). `None`, wenn die Datei fehlt.
+    fn quelle_fuer(&self, o: Objekt) -> Option<String> {
+        let s = self.welt.get::<&Script>(o).ok()?.datei.clone();
+        let text = &self.puffer.get(&s)?.text;
+        let sprache = Sprache::aus_datei(&s).unwrap_or(Sprache::Luau);
+        let ereignisse = self.welt.get::<&Ereignisse>(o).map(|e| e.0.clone()).unwrap_or_default();
+        Some(script_quelle::fuer_laufzeit(text, sprache, &ereignisse))
+    }
+
+    /// „▶ Run“ einer Live-Funktion: Script in einer eigenen, kurzen Laufzeit laden und die Funktion
+    /// mit den Werten aus den Eigenschaften aufrufen – im Bearbeiten-Modus direkt auf der Szene
+    /// (z. B. um eine Generierungs-Funktion auszuprobieren). Rückgängig macht alles wieder weg.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn live_ausfuehren(&mut self, o: Objekt, funktion: &str) {
+        let Ok(datei) = self.welt.get::<&Script>(o).map(|s| s.datei.clone()) else {
+            return;
+        };
+        let Some(text) = self.puffer.get(&datei).map(|p| p.text.clone()) else {
+            return;
+        };
+        let sprache = Sprache::aus_datei(&datei).unwrap_or(Sprache::Luau);
+        let argumente: Vec<String> = self
+            .welt
+            .get::<&Live>(o)
+            .ok()
+            .and_then(|l| l.0.get(funktion).cloned())
+            .unwrap_or_default();
+        let quelle = script_quelle::fuer_live_aufruf(&text, sprache, funktion, &argumente);
+        let name = self.name(o);
+        let eltern = self.eltern(o);
+        let mut lz = match self.motor_holen(sprache).and_then(|m| m.starten()) {
+            Ok(lz) => lz,
+            Err(e) => return self.melden(Art::Fehler, format!("Run: {e}")),
+        };
+        lz.kontext().texturen = self.assets.textur_namen().clone();
+        lz.kontext().sound_namen = self.audio.namen().cloned().collect();
+        if self.modus == Modus::Bearbeiten {
+            self.markieren();
+        }
+        self.melden(
+            Art::System,
+            format!("⚡ Run: {name}.{funktion}({})", argumente.join(", ")),
+        );
+        if lz.script_laden(&mut self.welt, &name, &quelle, Some(o), eltern) {
+            lz.start(&mut self.welt);
+        }
+        // Meldungen und Sounds wie beim Spielen übernehmen, danach ist die Laufzeit wieder weg
+        self.laufzeiten.push((sprache, lz));
+        self.meldungen_uebernehmen();
+        self.laufzeiten.pop();
+        self.geaendert = true;
     }
 
     /// Gast-Modul einer Sprache im Hintergrund übersetzen lassen, falls noch nicht geschehen.
@@ -700,8 +784,36 @@ impl Studio {
             if let Ok(x) = self.welt.get::<&Bild>(alt) {
                 b.add(*x);
             }
+            if let Ok(r) = self.welt.get::<&Raum>(alt) {
+                let mut r = *r;
+                if alt == o {
+                    r.position.x += 1.5;
+                }
+                b.add(r);
+            }
+            if let Ok(x) = self.welt.get::<&Mesh3d>(alt) {
+                b.add(*x);
+            }
             if let Ok(x) = self.welt.get::<&Bewegung>(alt) {
                 b.add(*x);
+            }
+            if let Ok(x) = self.welt.get::<&Kollision>(alt) {
+                b.add(*x);
+            }
+            if let Ok(x) = self.welt.get::<&HitBoxGroesse>(alt) {
+                b.add(*x);
+            }
+            if let Ok(x) = self.welt.get::<&Masse>(alt) {
+                b.add(*x);
+            }
+            if let Ok(x) = self.welt.get::<&ScriptVerweise>(alt) {
+                b.add((*x).clone());
+            }
+            if let Ok(x) = self.welt.get::<&Ereignisse>(alt) {
+                b.add((*x).clone());
+            }
+            if let Ok(x) = self.welt.get::<&Live>(alt) {
+                b.add((*x).clone());
             }
             if let Ok(s) = self.welt.get::<&Script>(alt).map(|s| (*s).clone()) {
                 let sprache = Sprache::aus_datei(&s.datei).unwrap_or(Sprache::Luau);
@@ -754,7 +866,43 @@ impl Studio {
                 bester = Some((b.ebene, o));
             }
         }
-        bester.map(|(_, o)| o)
+        if let Some((_, o)) = bester {
+            return Some(o);
+        }
+        // Leere Objekte (ohne Bild): kleine Raute an ihrer Position
+        let radius = 10.0 / self.kamera.zoom;
+        self.welt
+            .query::<(Objekt, &Transform)>()
+            .without::<&Bild>()
+            .without::<&Instanz>()
+            .without::<&Raum>()
+            .iter()
+            .filter_map(|(o, _)| welt::welt_transform(&self.welt, o).map(|t| (o, t)))
+            .filter(|(_, t)| t.position.distance(punkt) <= radius)
+            .map(|(o, _)| o)
+            .next()
+    }
+
+    /// Neues leeres Objekt: nur Name, Position (Transform) und Eltern – alles andere über Properties.
+    fn leeres_objekt_anlegen(&mut self, eltern: Option<Objekt>) {
+        self.markieren();
+        let o = if self.ansicht3d {
+            self.welt.spawn((
+                Name("Objekt".into()),
+                Raum {
+                    position: self.kamera3d.ziel,
+                    ..Default::default()
+                },
+            ))
+        } else {
+            self.welt
+                .spawn((Name("Objekt".into()), Transform::bei(self.kamera.position)))
+        };
+        if let Some(e) = eltern.filter(|e| self.welt.get::<&Script>(*e).is_err()) {
+            welt::eltern_setzen(&mut self.welt, o, Some(e));
+        }
+        self.auswahl = Some(o);
+        self.tab = Tab::Szene;
     }
 
     fn objekt_anlegen(&mut self, name: &str, textur_name: &str, groesse: Vec2) {
@@ -883,6 +1031,13 @@ impl Studio {
                 self.auswahl = Some(o);
                 if let Ok(datei) = self.welt.get::<&Script>(o).map(|s| s.datei.clone()) {
                     self.script_oeffnen(&datei);
+                } else if self.welt.get::<&Raum>(o).is_ok()
+                    && (self.ansicht3d || self.welt.get::<&Transform>(o).is_err())
+                {
+                    // 3D-Objekt: Kamera darauf richten
+                    self.tab = Tab::Szene;
+                    self.ansicht3d = true;
+                    self.kamera3d_zu(o);
                 } else if let Some(t) = welt::welt_transform(&self.welt, o) {
                     // Doppelklick auf ein sichtbares Objekt: Kamera hinfahren
                     self.tab = Tab::Szene;
@@ -934,13 +1089,47 @@ impl Studio {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Alle aktiven Script-Objekte, nach Namen sortiert
+            // Property „Scripts“: Für jedes Objekt eine eigene Kopie des Scripts (Instanz), die unter
+            // dem Objekt hängt → script.object / script.parent = dieses Objekt. Die Szene ist schon
+            // gemerkt (Schnappschuss), bei ■ verschwinden die Kopien wieder.
+            let verweise: Vec<(Objekt, Vec<String>)> = self
+                .welt
+                .query::<(Objekt, &ScriptVerweise)>()
+                .iter()
+                .map(|(o, v)| (o, v.0.clone()))
+                .collect();
+            let mut verlinkt: Vec<String> = Vec::new();
+            for (ziel, dateien) in verweise {
+                for datei in dateien {
+                    let Some(vorlage) = self.script_objekt(&datei) else {
+                        self.melden(
+                            Art::Fehler,
+                            format!("{}: verknüpftes Script scripts/{datei} gibt es nicht", self.name(ziel)),
+                        );
+                        continue;
+                    };
+                    let mut b = hecs::EntityBuilder::new();
+                    b.add(Name(self.name(vorlage)));
+                    b.add(Script {
+                        datei: datei.clone(),
+                        aktiv: true,
+                    });
+                    b.add(Eltern(ziel));
+                    b.add(Instanz);
+                    if let Ok(e) = self.welt.get::<&Ereignisse>(vorlage).map(|e| (*e).clone()) {
+                        b.add(e);
+                    }
+                    self.welt.spawn(b.build());
+                    verlinkt.push(datei);
+                }
+            }
+            // Alle aktiven Script-Objekte, nach Namen sortiert. Verknüpfte Scripts laufen nur als Kopien.
             let mut scripts: Vec<(Objekt, String, Script, Option<Objekt>)> = self
                 .welt
-                .query::<(Objekt, &Script)>()
+                .query::<(Objekt, &Script, Option<&Instanz>)>()
                 .iter()
-                .filter(|(_, s)| s.aktiv)
-                .map(|(o, s)| (o, String::new(), s.clone(), None))
+                .filter(|(_, s, i)| s.aktiv && (i.is_some() || !verlinkt.contains(&s.datei)))
+                .map(|(o, s, _)| (o, String::new(), s.clone(), None))
                 .collect();
             for s in scripts.iter_mut() {
                 s.1 = self.name(s.0);
@@ -969,15 +1158,19 @@ impl Studio {
                 }
             }
 
+            let quellen: HashMap<Objekt, String> = scripts
+                .iter()
+                .filter_map(|(o, _, _, _)| self.quelle_fuer(*o).map(|q| (*o, q)))
+                .collect();
             let mut fehlend = Vec::new();
             for (o, name, script, eltern) in &scripts {
                 let sp = Sprache::aus_datei(&script.datei);
                 let Some((_, lz)) = self.laufzeiten.iter_mut().find(|(s, _)| Some(*s) == sp) else {
                     continue; // Sprache nicht verfügbar – Fehler wurde schon gemeldet
                 };
-                match self.puffer.get(&script.datei) {
-                    Some(p) => {
-                        lz.script_laden(&mut self.welt, name, &p.text, Some(*o), *eltern);
+                match quellen.get(o) {
+                    Some(q) => {
+                        lz.script_laden(&mut self.welt, name, q, Some(*o), *eltern);
                     }
                     None => fehlend.push(format!("{name}: Datei scripts/{} fehlt", script.datei)),
                 }
@@ -1086,9 +1279,9 @@ impl Studio {
         if self.modus != Modus::Laeuft {
             return;
         }
-        let Some(text) = self.puffer.get(datei).map(|p| p.text.clone()) else {
+        if !self.puffer.contains_key(datei) {
             return;
-        };
+        }
         let objekte: Vec<Objekt> = self
             .welt
             .query::<(Objekt, &Script)>()
@@ -1099,6 +1292,7 @@ impl Studio {
         for o in objekte {
             let name = self.name(o);
             let eltern = self.eltern(o);
+            let Some(text) = self.quelle_fuer(o) else { continue };
             let sprache = Sprache::aus_datei(datei);
             let Some((_, lz)) = self.laufzeiten.iter_mut().find(|(s, _)| Some(*s) == sprache) else {
                 return self.melden(
@@ -1236,7 +1430,11 @@ impl Studio {
                     if input.taste(KeyCode::KeyD) {
                         r.x += 1.0;
                     }
-                    self.kamera.position += r.normalize_or_zero() * 700.0 / self.kamera.zoom * dt;
+                    if self.ansicht3d {
+                        self.kamera3d_bewegen(r, dt);
+                    } else {
+                        self.kamera.position += r.normalize_or_zero() * 700.0 / self.kamera.zoom * dt;
+                    }
                     if input.taste_neu(KeyCode::Delete) {
                         if let Some(o) = self.auswahl {
                             self.loeschen(o);
@@ -1318,6 +1516,9 @@ impl Studio {
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if self.marke.is_none() {
+            self.marke = Some(Marke::laden(&ctx));
+        }
         // Dateien ins Fenster gezogen? (PNG → Bild, WAV/OGG/MP3/FLAC → Sound)
         let (gezogen, schwebt) = ctx.input(|i| {
             (
@@ -1408,24 +1609,44 @@ impl Studio {
             .show(ui, |ui| self.mitte_ui(ui));
 
         self.verlauf_festhalten(&ctx);
+
+        // Startanimation (Eis, Schnee, Logo) über allem – ein Klick überspringt
+        if self.startanimation {
+            let t = self.gestartet_um.elapsed().as_secs_f32();
+            if let Some(m) = &self.marke {
+                self.startanimation = marke::startanimation(&ctx, m, t);
+            }
+        }
     }
 
     fn leiste_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🌲 Timbre Studio").strong());
+            // Logo: dreht sich langsam, solange das Spiel läuft
+            if let Some(m) = &self.marke {
+                let zeit = ui.input(|i| i.time) as f32;
+                let winkel = if self.modus == Modus::Laeuft { zeit * 0.8 } else { 0.0 };
+                ui.add(
+                    egui::Image::new(&m.logo)
+                        .fit_to_exact_size(egui::vec2(20.0, 20.0))
+                        .rotate(winkel, egui::vec2(0.5, 0.5)),
+                );
+            }
+            ui.label(RichText::new("Timbre Studio").strong().color(eis::EIS));
             ui.label(RichText::new(&self.projekt_name).weak());
             ui.separator();
             match self.modus {
                 Modus::Bearbeiten => {
                     let knopf = egui::Button::new(RichText::new("▶ Ausführen").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0x3E, 0x7A, 0x3A));
+                        .fill(eis::NORDLICHT.gamma_multiply(0.85));
                     if ui.add(knopf).on_hover_text("Scripts starten (F5)").clicked() {
                         self.starten();
                     }
                 }
                 Modus::Laeuft => {
+                    // Stopp-Knopf pulsiert sanft, solange das Spiel läuft
+                    let puls = 0.8 + 0.2 * ((ui.input(|i| i.time) as f32) * 3.0).sin();
                     let knopf = egui::Button::new(RichText::new("■ Stopp").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0xA8, 0x3A, 0x2E));
+                        .fill(eis::GLUT.gamma_multiply(puls));
                     if ui
                         .add(knopf)
                         .on_hover_text("Anhalten und Szene zurücksetzen (F5)")
@@ -1456,6 +1677,19 @@ impl Studio {
                 .clicked()
             {
                 self.wiederholen();
+            }
+            ui.separator();
+            // 2D / 3D
+            let mut drei = self.ansicht3d;
+            ui.selectable_value(&mut drei, false, "2D")
+                .on_hover_text("Szene in 2D: Sprites, Kamera von oben");
+            ui.selectable_value(&mut drei, true, "3D")
+                .on_hover_text("Szene in 3D: Körper (Mesh-Property), Kamera frei drehbar");
+            if drei != self.ansicht3d {
+                self.ansicht3d = drei;
+                self.ziehen = None;
+                self.ziehen3d = None;
+                self.griff = None;
             }
             ui.separator();
             ui.checkbox(&mut self.gitter, "Gitter").on_hover_text(
@@ -1537,12 +1771,25 @@ impl Studio {
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Explorer").strong());
         ui.horizontal_wrapped(|ui| {
-            if ui.small_button("+ Baumscheibe").clicked() {
-                self.objekt_anlegen("Baumscheibe", "jahresringe", Vec2::splat(120.0));
+            if ui
+                .small_button("+ Objekt")
+                .on_hover_text(
+                    "Neues leeres Objekt (Name, Position, Eltern) – Bild, HitBox, Masse … über „Property hinzufügen“",
+                )
+                .clicked()
+            {
+                self.leeres_objekt_anlegen(None);
             }
-            if ui.small_button("+ Blatt").clicked() {
-                self.objekt_anlegen("Blatt", "blatt", Vec2::splat(64.0));
-            }
+            ui.menu_button("+ Körper", |ui| {
+                for f in Form3d::ALLE {
+                    if ui.button(f.name()).clicked() {
+                        self.koerper_anlegen(f);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Neuer 3D-Körper (Transform 3D + Mesh) – wechselt in die 3D-Ansicht");
             if ui
                 .small_button("+ Script")
                 .on_hover_text("Neues Script – unter dem ausgewählten Objekt, falls eins ausgewählt ist")
@@ -1559,6 +1806,7 @@ impl Studio {
         for (o, n, s, b) in self
             .welt
             .query::<(Objekt, Option<&Name>, Option<&Script>, Option<&Bild>)>()
+            .without::<&Instanz>() // laufende Script-Kopien nicht zeigen
             .iter()
         {
             let art = if s.is_some() {
@@ -1666,6 +1914,19 @@ impl Studio {
         ui.separator();
         let Some(o) = self.auswahl else {
             ui.label(RichText::new("Klicke ein Objekt in der Szene oder im Explorer an.").weak());
+            if let Some(m) = &self.marke {
+                ui.add_space(30.0);
+                ui.vertical_centered(|ui| {
+                    // Kristall „atmet“ leicht
+                    let t = ui.input(|i| i.time) as f32;
+                    let g = 110.0 + (t * 0.8).sin() * 6.0;
+                    ui.add(
+                        egui::Image::new(&m.kristall)
+                            .fit_to_exact_size(egui::vec2(g, g))
+                            .tint(Color32::WHITE.gamma_multiply(0.12)),
+                    );
+                });
+            }
             return;
         };
         if self.modus == Modus::Laeuft {
@@ -1780,6 +2041,8 @@ impl Studio {
             if let Some(sp) = sprache_neu {
                 self.sprache_wechseln(o, sp);
             }
+            self.script_ereignisse_ui(ui, o, &s.datei);
+            self.live_ui(ui, o, &s.datei);
         }
 
         // Transform
@@ -1819,139 +2082,9 @@ impl Studio {
             }
         }
 
-        // Bild
-        if let Ok(mut b) = self.welt.get::<&Bild>(o).map(|b| *b) {
-            ui.add_space(6.0);
-            ui.label(RichText::new("Bild").strong());
-            let vorher = b;
-            let mut namen: Vec<(String, TexturId)> = self
-                .assets
-                .textur_namen()
-                .iter()
-                .map(|(n, t)| (n.clone(), *t))
-                .collect();
-            namen.sort();
-            egui::Grid::new("bild").num_columns(2).show(ui, |ui| {
-                ui.label("Textur");
-                egui::ComboBox::from_id_salt("textur")
-                    .selected_text(self.assets.name_von(b.textur).unwrap_or("?"))
-                    .show_ui(ui, |ui| {
-                        for (n, t) in &namen {
-                            ui.selectable_value(&mut b.textur, *t, n);
-                        }
-                    });
-                ui.end_row();
-                ui.label("Größe");
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut b.groesse.x).speed(1.0).prefix("b "));
-                    ui.add(egui::DragValue::new(&mut b.groesse.y).speed(1.0).prefix("h "));
-                });
-                ui.end_row();
-                ui.label("Farbe");
-                ui.color_edit_button_rgba_unmultiplied(&mut b.farbe);
-                ui.end_row();
-                ui.label("Ebene");
-                ui.add(egui::DragValue::new(&mut b.ebene).speed(0.1));
-                ui.end_row();
-            });
-            if b != vorher {
-                let _ = self.welt.insert_one(o, b);
-                self.markieren();
-            }
-        }
-
-        // Kollision (nur für Objekte mit Bild – die Größe kommt aus dem Bild)
-        if self.welt.get::<&Bild>(o).is_ok() {
-            ui.add_space(6.0);
-            match self.welt.get::<&Kollision>(o).map(|k| *k) {
-                Ok(mut k) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Kollision").strong());
-                        if ui.small_button("entfernen").clicked() {
-                            let _ = self.welt.remove_one::<Kollision>(o);
-                            self.markieren();
-                        }
-                    });
-                    let vorher = k;
-                    egui::Grid::new("kollision").num_columns(2).show(ui, |ui| {
-                        ui.label("Form");
-                        egui::ComboBox::from_id_salt("form")
-                            .selected_text(match k.form {
-                                Form::Kreis => "Kreis",
-                                Form::Rechteck => "Rechteck",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut k.form, Form::Kreis, "Kreis");
-                                ui.selectable_value(&mut k.form, Form::Rechteck, "Rechteck");
-                            });
-                        ui.end_row();
-                        ui.label("Fest");
-                        ui.checkbox(&mut k.fest, "blockiert")
-                            .on_hover_text("Aus = nur Auslöser: meldet Berührungen (on_touch), blockiert aber nichts");
-                        ui.end_row();
-                        ui.label("Verankert");
-                        ui.checkbox(&mut k.verankert, "bleibt stehen")
-                            .on_hover_text("Wird bei Zusammenstößen nie weggeschoben (wie Anchored in Roblox)");
-                        ui.end_row();
-                    });
-                    if k != vorher {
-                        let _ = self.welt.insert_one(o, k);
-                        self.markieren();
-                    }
-                }
-                Err(_) => {
-                    if ui
-                        .small_button("+ Kollision")
-                        .on_hover_text("Stößt mit anderen Objekten zusammen und meldet Berührungen (on_touch)")
-                        .clicked()
-                    {
-                        let _ = self.welt.insert_one(o, Kollision::default());
-                        self.markieren();
-                    }
-                }
-            }
-        }
-
-        // Bewegung (nur für Objekte mit Platz in der Welt)
-        if self.welt.get::<&Transform>(o).is_ok() {
-            ui.add_space(6.0);
-            match self.welt.get::<&Bewegung>(o).map(|b| *b) {
-                Ok(mut bew) => {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Bewegung").strong());
-                        if ui.small_button("entfernen").clicked() {
-                            let _ = self.welt.remove_one::<Bewegung>(o);
-                            self.markieren();
-                        }
-                    });
-                    let vorher = bew;
-                    egui::Grid::new("bewegung").num_columns(2).show(ui, |ui| {
-                        ui.label("Tempo");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(&mut bew.linear.x).speed(1.0).prefix("x "));
-                            ui.add(egui::DragValue::new(&mut bew.linear.y).speed(1.0).prefix("y "));
-                        });
-                        ui.end_row();
-                        ui.label("Drehen");
-                        ui.add(egui::DragValue::new(&mut bew.drehung).speed(0.05).suffix(" rad/s"));
-                        ui.end_row();
-                    });
-                    if bew != vorher && self.welt.get::<&Bewegung>(o).is_ok() {
-                        let _ = self.welt.insert_one(o, bew);
-                        self.markieren();
-                    }
-                }
-                Err(_) => {
-                    if ui
-                        .small_button("+ Bewegung")
-                        .on_hover_text("Bewegt sich beim Ausführen von selbst")
-                        .clicked()
-                    {
-                        let _ = self.welt.insert_one(o, Bewegung::default());
-                        self.markieren();
-                    }
-                }
-            }
+        // Properties (wie Komponenten in Unity): jede als eigener Block, mit 🗙 entfernbar
+        if self.welt.get::<&Script>(o).is_err() {
+            self.properties_ui(ui, o);
         }
 
         ui.add_space(12.0);
@@ -1969,6 +2102,534 @@ impl Studio {
                 self.loeschen(o);
             }
         });
+    }
+
+    /// Ereignisse eines Scripts: welche Funktion bei Start/Update/Berührung/Nachricht aufgerufen wird.
+    /// Beim Tippen werden passende Funktionen aus dem Script vorgeschlagen.
+    fn script_ereignisse_ui(&mut self, ui: &mut egui::Ui, o: Objekt, datei: &str) {
+        let sprache = Sprache::aus_datei(datei).unwrap_or(Sprache::Luau);
+        let funktionen: Vec<String> = self
+            .puffer
+            .get(datei)
+            .map(|p| script_quelle::funktionen(&p.text, sprache))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        let vorher = self.welt.get::<&Ereignisse>(o).map(|e| e.0.clone()).unwrap_or_default();
+        let mut karte = vorher.clone();
+        ui.add_space(4.0);
+        egui::Frame::new()
+            .fill(eis::BLOCK)
+            .stroke(Stroke::new(1.0, eis::RAND))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("⚑ Ereignisse").strong().color(eis::EIS))
+                    .on_hover_text("Welche Funktion des Scripts wird wann aufgerufen? Leer = Ereignis aus.");
+                for (ereignis, beschriftung) in script_quelle::EREIGNISSE {
+                    let mut wert = karte.get(ereignis).cloned().unwrap_or_else(|| ereignis.to_string());
+                    let feld_id = egui::Id::new(("ereignis", datei, ereignis));
+                    ui.horizontal(|ui| {
+                        ui.add_sized([96.0, 18.0], egui::Label::new(RichText::new(beschriftung).small()));
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut wert)
+                                .id(feld_id)
+                                .hint_text("(aus)")
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if r.changed() {
+                            karte.insert(ereignis.to_string(), wert.clone());
+                        }
+                    });
+                    let name = wert.trim();
+                    // Warnen nur bei selbst gewählten Namen (Standardnamen dürfen fehlen = Ereignis unbenutzt)
+                    if !name.is_empty() && name != ereignis && !funktionen.iter().any(|f| f == name) {
+                        ui.label(
+                            RichText::new(format!("   ⚠ „{name}“ gibt es (noch) nicht im Script"))
+                                .small()
+                                .color(Color32::from_rgb(0xF0, 0xB4, 0x5A)),
+                        );
+                    }
+                    // Vorschläge, solange das Feld Fokus hat
+                    if ui.memory(|m| m.has_focus(feld_id)) {
+                        let klein = name.to_lowercase();
+                        let passend: Vec<&String> = funktionen
+                            .iter()
+                            .filter(|f| f.to_lowercase().starts_with(&klein) && f.as_str() != name)
+                            .take(6)
+                            .collect();
+                        if !passend.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.add_space(100.0);
+                                for f in passend {
+                                    if ui
+                                        .add(egui::Button::new(RichText::new(f).monospace().small()).small())
+                                        .clicked()
+                                    {
+                                        karte.insert(ereignis.to_string(), f.clone());
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+        // Nur Abweichungen vom Standard speichern
+        karte.retain(|k, v| v.trim() != k);
+        if karte != vorher {
+            if karte.is_empty() {
+                let _ = self.welt.remove_one::<Ereignisse>(o);
+            } else {
+                let _ = self.welt.insert_one(o, Ereignisse(karte));
+            }
+            self.markieren();
+        }
+    }
+
+    /// Live-Script: Schalter, und für jede `live`-Funktion ihre Argumente als Felder + „▶ Run“.
+    fn live_ui(&mut self, ui: &mut egui::Ui, o: Objekt, datei: &str) {
+        let sprache = Sprache::aus_datei(datei).unwrap_or(Sprache::Luau);
+        let vorher = self.welt.get::<&Live>(o).ok().map(|l| l.0.clone());
+        let mut live = vorher.clone();
+        let mut ausfuehren: Option<String> = None;
+        ui.add_space(4.0);
+        egui::Frame::new()
+            .fill(eis::BLOCK)
+            .stroke(Stroke::new(1.0, if live.is_some() { eis::AKZENT } else { eis::RAND }))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let mut an = live.is_some();
+                if ui
+                    .checkbox(&mut an, RichText::new("⚡ Live-Script").strong().color(eis::EIS))
+                    .on_hover_text(
+                        "Funktionen mit „live“ davor bekommen hier Felder für ihre Argumente und einen ▶ Run-Knopf – \
+                         zum Ausprobieren ohne das Spiel zu starten",
+                    )
+                    .changed()
+                {
+                    live = an.then(Default::default);
+                }
+                let Some(werte) = live.as_mut() else { return };
+                let funktionen: Vec<script_quelle::Funktion> = self
+                    .puffer
+                    .get(datei)
+                    .map(|p| script_quelle::funktionen(&p.text, sprache))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|f| f.live)
+                    .collect();
+                if funktionen.is_empty() {
+                    let beispiel = match sprache {
+                        Sprache::Python => "live def baue(anzahl, abstand):",
+                        _ => "live function baue(anzahl, abstand)",
+                    };
+                    ui.label(
+                        RichText::new(format!("Noch keine Live-Funktion. Schreibe z. B.\n{beispiel}"))
+                            .small()
+                            .weak(),
+                    );
+                }
+                for f in funktionen {
+                    let args = werte.entry(f.name.clone()).or_default();
+                    args.resize(f.parameter.len(), String::new());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("{}({})", f.name, f.parameter.join(", "))).monospace(),
+                            )
+                            .truncate(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let knopf = egui::Button::new(RichText::new("▶ Run").color(Color32::WHITE))
+                                .fill(eis::GLETSCHER);
+                            if ui
+                                .add(knopf)
+                                .on_hover_text("Funktion jetzt aufrufen – Ergebnis bleibt in der Szene (Strg+Z macht es rückgängig)")
+                                .clicked()
+                            {
+                                ausfuehren = Some(f.name.clone());
+                            }
+                        });
+                    });
+                    egui::Grid::new(("live", datei, &f.name)).num_columns(2).show(ui, |ui| {
+                        for (p, wert) in f.parameter.iter().zip(args.iter_mut()) {
+                            ui.label(RichText::new(p).small());
+                            ui.add(
+                                egui::TextEdit::singleline(wert)
+                                    .hint_text("Zahl, Text, true/false")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
+        if live != vorher {
+            match &live {
+                Some(l) => {
+                    let _ = self.welt.insert_one(o, Live(l.clone()));
+                }
+                None => {
+                    let _ = self.welt.remove_one::<Live>(o);
+                }
+            }
+            self.markieren();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(f) = ausfuehren {
+            self.live_ausfuehren(o, &f);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ausfuehren;
+    }
+
+    /// Die Properties eines Objekts als Blöcke + „Property hinzufügen“.
+    fn properties_ui(&mut self, ui: &mut egui::Ui, o: Objekt) {
+        let mut entfernen: Option<Property> = None;
+
+        // Bild
+        if let Ok(mut b) = self.welt.get::<&Bild>(o).map(|b| *b) {
+            let vorher = b;
+            let mut namen: Vec<(String, TexturId)> = self
+                .assets
+                .textur_namen()
+                .iter()
+                .map(|(n, t)| (n.clone(), *t))
+                .collect();
+            namen.sort();
+            let textur_name = self.assets.name_von(b.textur).unwrap_or("?").to_string();
+            if property_block(ui, Property::Bild, |ui| {
+                egui::Grid::new("bild").num_columns(2).show(ui, |ui| {
+                    ui.label("Textur");
+                    egui::ComboBox::from_id_salt("textur")
+                        .selected_text(textur_name)
+                        .show_ui(ui, |ui| {
+                            for (n, t) in &namen {
+                                ui.selectable_value(&mut b.textur, *t, n);
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Größe");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut b.groesse.x).speed(1.0).prefix("b "));
+                        ui.add(egui::DragValue::new(&mut b.groesse.y).speed(1.0).prefix("h "));
+                    });
+                    ui.end_row();
+                    ui.label("Farbe");
+                    ui.color_edit_button_rgba_unmultiplied(&mut b.farbe);
+                    ui.end_row();
+                    ui.label("Ebene");
+                    ui.add(egui::DragValue::new(&mut b.ebene).speed(0.1));
+                    ui.end_row();
+                });
+            }) {
+                entfernen = Some(Property::Bild);
+            }
+            if b != vorher {
+                let _ = self.welt.insert_one(o, b);
+                self.markieren();
+            }
+        }
+
+        // HitBox (Kollision)
+        if let Ok(mut k) = self.welt.get::<&Kollision>(o).map(|k| *k) {
+            let vorher = k;
+            let hat_bild = self.welt.get::<&Bild>(o).is_ok();
+            let eigene = self.welt.get::<&HitBoxGroesse>(o).ok().map(|g| g.0);
+            let mut groesse = eigene;
+            if property_block(ui, Property::HitBox, |ui| {
+                egui::Grid::new("hitbox").num_columns(2).show(ui, |ui| {
+                    ui.label("Form");
+                    egui::ComboBox::from_id_salt("form")
+                        .selected_text(match k.form {
+                            Form::Kreis => "Kreis",
+                            Form::Rechteck => "Rechteck",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut k.form, Form::Kreis, "Kreis");
+                            ui.selectable_value(&mut k.form, Form::Rechteck, "Rechteck");
+                        });
+                    ui.end_row();
+                    ui.label("Größe");
+                    ui.horizontal(|ui| {
+                        let mut eigen = groesse.is_some() || !hat_bild;
+                        if hat_bild
+                            && ui
+                                .checkbox(&mut eigen, "eigene")
+                                .on_hover_text("Aus = so groß wie das Bild")
+                                .changed()
+                        {
+                            groesse = eigen.then_some(groesse.unwrap_or(Vec2::splat(64.0)));
+                        }
+                        if eigen {
+                            let g = groesse.get_or_insert(Vec2::splat(64.0));
+                            ui.add(egui::DragValue::new(&mut g.x).speed(1.0).prefix("b "));
+                            ui.add(egui::DragValue::new(&mut g.y).speed(1.0).prefix("h "));
+                        } else {
+                            ui.label(RichText::new("wie das Bild").weak());
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Fest");
+                    ui.checkbox(&mut k.fest, "blockiert")
+                        .on_hover_text("Aus = nur Auslöser: meldet Berührungen (on_touch), blockiert aber nichts");
+                    ui.end_row();
+                    ui.label("Verankert");
+                    ui.checkbox(&mut k.verankert, "bleibt stehen")
+                        .on_hover_text("Wird bei Zusammenstößen nie weggeschoben (wie Anchored in Roblox)");
+                    ui.end_row();
+                });
+            }) {
+                entfernen = Some(Property::HitBox);
+            }
+            if k != vorher {
+                let _ = self.welt.insert_one(o, k);
+                self.markieren();
+            }
+            if groesse != eigene {
+                match groesse {
+                    Some(g) => {
+                        let _ = self.welt.insert_one(o, HitBoxGroesse(g));
+                    }
+                    None => {
+                        let _ = self.welt.remove_one::<HitBoxGroesse>(o);
+                    }
+                }
+                self.markieren();
+            }
+        }
+
+        // Masse
+        if let Ok(mut m) = self.welt.get::<&Masse>(o).map(|m| *m) {
+            let vorher = m;
+            if property_block(ui, Property::Masse, |ui| {
+                egui::Grid::new("masse").num_columns(2).show(ui, |ui| {
+                    ui.label("Masse");
+                    // Masselos → Feld ausgegraut
+                    ui.add_enabled(
+                        !m.masselos,
+                        egui::DragValue::new(&mut m.wert)
+                            .speed(0.05)
+                            .range(0.001..=1_000_000.0)
+                            .suffix(" kg"),
+                    );
+                    ui.end_row();
+                    ui.label("Masselos");
+                    ui.checkbox(&mut m.masselos, "").on_hover_text(
+                        "Zählt wie keine Masse: wird bei Zusammenstößen ganz weggeschoben, schiebt selbst nichts",
+                    );
+                    ui.end_row();
+                });
+            }) {
+                entfernen = Some(Property::Masse);
+            }
+            if m != vorher {
+                let _ = self.welt.insert_one(o, m);
+                self.markieren();
+            }
+        }
+
+        // Bewegung
+        if let Ok(mut bew) = self.welt.get::<&Bewegung>(o).map(|b| *b) {
+            let vorher = bew;
+            if property_block(ui, Property::Bewegung, |ui| {
+                egui::Grid::new("bewegung").num_columns(2).show(ui, |ui| {
+                    ui.label("Tempo");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut bew.linear.x).speed(1.0).prefix("x "));
+                        ui.add(egui::DragValue::new(&mut bew.linear.y).speed(1.0).prefix("y "));
+                    });
+                    ui.end_row();
+                    ui.label("Drehen");
+                    ui.add(egui::DragValue::new(&mut bew.drehung).speed(0.05).suffix(" rad/s"));
+                    ui.end_row();
+                });
+            }) {
+                entfernen = Some(Property::Bewegung);
+            }
+            if bew != vorher {
+                let _ = self.welt.insert_one(o, bew);
+                self.markieren();
+            }
+        }
+
+        // Scripts (verlinkt)
+        if let Ok(mut v) = self.welt.get::<&ScriptVerweise>(o).map(|v| v.0.clone()) {
+            let vorher = v.clone();
+            let mut dateien: Vec<String> = self
+                .welt
+                .query::<&Script>()
+                .without::<&Instanz>()
+                .iter()
+                .map(|s| s.datei.clone())
+                .collect();
+            dateien.sort_by(|a, b| natuerlich(a, b));
+            dateien.dedup();
+            if property_block(ui, Property::Scripts, |ui| {
+                ui.label(
+                    RichText::new("Jedes Script läuft für dieses Objekt als eigene Kopie – im Script ist script.object dieses Objekt.")
+                        .weak()
+                        .small(),
+                );
+                let mut weg = None;
+                for (i, d) in v.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("📜 {}", projekt::ohne_script_endung(d))).monospace());
+                        if ui.small_button("🗙").on_hover_text("Verknüpfung lösen").clicked() {
+                            weg = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = weg {
+                    v.remove(i);
+                }
+                let mut neu: Option<String> = None;
+                egui::ComboBox::from_id_salt("script_verknuepfen")
+                    .selected_text("+ Script verknüpfen")
+                    .show_ui(ui, |ui| {
+                        for d in dateien.iter().filter(|d| !v.contains(d)) {
+                            if ui.selectable_label(false, projekt::ohne_script_endung(d)).clicked() {
+                                neu = Some(d.clone());
+                            }
+                        }
+                    });
+                v.extend(neu);
+            }) {
+                entfernen = Some(Property::Scripts);
+            }
+            if v != vorher {
+                let _ = self.welt.insert_one(o, ScriptVerweise(v));
+                self.markieren();
+            }
+        }
+
+        // 3D: Transform 3D + Mesh
+        if let Some(p) = self.properties3d_ui(ui, o) {
+            entfernen = Some(p);
+        }
+
+        if let Some(p) = entfernen {
+            self.property_entfernen(o, p);
+        }
+
+        // Property hinzufügen
+        ui.add_space(6.0);
+        let fehlend: Vec<Property> = Property::ALLE
+            .into_iter()
+            .filter(|p| !self.hat_property(o, *p))
+            .collect();
+        if !fehlend.is_empty() {
+            let mut neu = None;
+            ui.menu_button(RichText::new("+ Property hinzufügen").color(eis::AKZENT), |ui| {
+                for p in fehlend {
+                    if ui
+                        .button(format!("{} {}", p.symbol(), p.name()))
+                        .on_hover_text(p.beschreibung())
+                        .clicked()
+                    {
+                        neu = Some(p);
+                        ui.close();
+                    }
+                }
+            });
+            if let Some(p) = neu {
+                self.property_hinzufuegen(o, p);
+            }
+        }
+    }
+
+    fn hat_property(&self, o: Objekt, p: Property) -> bool {
+        match p {
+            Property::Bild => self.welt.get::<&Bild>(o).is_ok(),
+            Property::HitBox => self.welt.get::<&Kollision>(o).is_ok(),
+            Property::Masse => self.welt.get::<&Masse>(o).is_ok(),
+            Property::Bewegung => self.welt.get::<&Bewegung>(o).is_ok(),
+            Property::Scripts => self.welt.get::<&ScriptVerweise>(o).is_ok(),
+            Property::Raum => self.welt.get::<&Raum>(o).is_ok(),
+            Property::Mesh => self.welt.get::<&Mesh3d>(o).is_ok(),
+        }
+    }
+
+    fn property_hinzufuegen(&mut self, o: Objekt, p: Property) {
+        let _ = match p {
+            Property::Bild => {
+                let textur = self
+                    .assets
+                    .textur_namen()
+                    .get("jahresringe")
+                    .or_else(|| self.assets.textur_namen().values().next())
+                    .copied();
+                match textur {
+                    Some(t) => self.welt.insert_one(o, Bild::new(t, Vec2::splat(64.0))),
+                    None => return,
+                }
+            }
+            Property::HitBox => {
+                if self.welt.get::<&Bild>(o).is_err() {
+                    let _ = self.welt.insert_one(o, HitBoxGroesse(Vec2::splat(64.0)));
+                }
+                self.welt.insert_one(o, Kollision::default())
+            }
+            Property::Masse => self.welt.insert_one(o, Masse::default()),
+            Property::Bewegung => self.welt.insert_one(o, Bewegung::default()),
+            Property::Scripts => self.welt.insert_one(o, ScriptVerweise::default()),
+            Property::Raum | Property::Mesh => {
+                if self.welt.get::<&Raum>(o).is_err() {
+                    let _ = self.welt.insert_one(
+                        o,
+                        Raum {
+                            position: self.kamera3d.ziel,
+                            ..Default::default()
+                        },
+                    );
+                }
+                if p == Property::Mesh {
+                    let _ = self.welt.insert_one(o, Mesh3d::default());
+                }
+                Ok(())
+            }
+        };
+        // Objekte ohne Platz in der Welt brauchen eine Position für die meisten Properties
+        let dreid = matches!(p, Property::Scripts | Property::Raum | Property::Mesh);
+        if self.welt.get::<&Transform>(o).is_err() && !dreid {
+            let _ = self.welt.insert_one(o, Transform::bei(self.kamera.position));
+        }
+        self.markieren();
+    }
+
+    fn property_entfernen(&mut self, o: Objekt, p: Property) {
+        match p {
+            Property::Bild => {
+                let _ = self.welt.remove_one::<Bild>(o);
+            }
+            Property::HitBox => {
+                let _ = self.welt.remove_one::<Kollision>(o);
+                let _ = self.welt.remove_one::<HitBoxGroesse>(o);
+            }
+            Property::Masse => {
+                let _ = self.welt.remove_one::<Masse>(o);
+            }
+            Property::Bewegung => {
+                let _ = self.welt.remove_one::<Bewegung>(o);
+            }
+            Property::Scripts => {
+                let _ = self.welt.remove_one::<ScriptVerweise>(o);
+            }
+            Property::Raum => {
+                let _ = self.welt.remove_one::<Raum>(o);
+                let _ = self.welt.remove_one::<Mesh3d>(o);
+            }
+            Property::Mesh => {
+                let _ = self.welt.remove_one::<Mesh3d>(o);
+            }
+        }
+        self.markieren();
     }
 
     fn mitte_ui(&mut self, ui: &mut egui::Ui) {
@@ -2420,6 +3081,10 @@ impl Studio {
     }
 
     fn szene_ui(&mut self, ui: &mut egui::Ui) {
+        if self.ansicht3d {
+            self.szene3d_ui(ui);
+            return;
+        }
         let (rect, antwort) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point();
         self.bereich = Some(Bereich {
@@ -2471,6 +3136,47 @@ impl Studio {
         // Gitter
         if self.gitter && bearbeiten {
             self.gitter_zeichnen(&painter, groesse, &zu_punkt, rect);
+        }
+
+        // Leere Objekte (ohne Bild) als kleine Eis-Raute zeigen, damit man sie findet und anklicken kann
+        if bearbeiten {
+            let leere: Vec<(Objekt, Vec2)> = self
+                .welt
+                .query::<(Objekt, &Transform)>()
+                .without::<&Bild>()
+                .without::<&Instanz>()
+                .without::<&Raum>()
+                .iter()
+                .filter_map(|(o, _)| welt::welt_transform(&self.welt, o).map(|t| (o, t.position)))
+                .collect();
+            for (o, p) in leere {
+                let m = zu_punkt(p);
+                let r = 6.0;
+                let ausgewaehlt = self.auswahl == Some(o);
+                let farbe = if ausgewaehlt {
+                    eis::EIS
+                } else {
+                    eis::AKZENT.gamma_multiply(0.8)
+                };
+                let punkte = vec![
+                    m + egui::vec2(0.0, -r),
+                    m + egui::vec2(r, 0.0),
+                    m + egui::vec2(0.0, r),
+                    m + egui::vec2(-r, 0.0),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    punkte,
+                    eis::GLETSCHER.gamma_multiply(0.35),
+                    Stroke::new(1.5, farbe),
+                ));
+                painter.text(
+                    m + egui::vec2(9.0, -9.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    self.name(o),
+                    egui::FontId::proportional(11.0),
+                    farbe,
+                );
+            }
         }
 
         // Griffe des ausgewählten Objekts: Ecken = skalieren, Kreis oben = drehen
@@ -2808,6 +3514,99 @@ fn motor_im_hintergrund(sprache: Sprache) -> Motor {
         let _ = tx.send(motor.map_err(|e| format!("{}: {e}", sprache.name())));
     });
     Motor::Laedt(rx)
+}
+
+/// Properties, die man Objekten geben kann (wie Komponenten in Unity).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Property {
+    Bild,
+    HitBox,
+    Masse,
+    Bewegung,
+    Scripts,
+    Raum,
+    Mesh,
+}
+
+impl Property {
+    const ALLE: [Property; 7] = [
+        Property::Bild,
+        Property::HitBox,
+        Property::Masse,
+        Property::Bewegung,
+        Property::Scripts,
+        Property::Raum,
+        Property::Mesh,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Property::Bild => "Bild",
+            Property::HitBox => "HitBox",
+            Property::Masse => "Masse",
+            Property::Bewegung => "Bewegung",
+            Property::Scripts => "Scripts",
+            Property::Raum => "Transform 3D",
+            Property::Mesh => "Mesh (3D)",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Property::Bild => "🖼",
+            Property::HitBox => "⬚",
+            Property::Masse => "⚖",
+            Property::Bewegung => "➜",
+            Property::Scripts => "📜",
+            Property::Raum => "📐",
+            Property::Mesh => "🔷",
+        }
+    }
+
+    fn beschreibung(self) -> &'static str {
+        match self {
+            Property::Bild => "Zeigt eine Textur (Sprite)",
+            Property::HitBox => "Stößt mit anderen zusammen und meldet Berührungen (on_touch)",
+            Property::Masse => "Wie schwer das Objekt bei Zusammenstößen ist",
+            Property::Bewegung => "Bewegt sich beim Ausführen von selbst",
+            Property::Scripts => "Scripts, die für dieses Objekt laufen (script.object)",
+            Property::Raum => "Position, Drehung und Skala im 3D-Raum",
+            Property::Mesh => "Zeigt einen 3D-Körper (Würfel, Kugel, Ebene, Zylinder) in der 3D-Ansicht",
+        }
+    }
+}
+
+/// Ein Property-Block in den Eigenschaften: Kopfzeile mit Symbol, Name und 🗙, darunter der Inhalt.
+/// Liefert `true`, wenn 🗙 (entfernen) geklickt wurde.
+fn property_block(ui: &mut egui::Ui, p: Property, inhalt: impl FnOnce(&mut egui::Ui)) -> bool {
+    let mut weg = false;
+    ui.add_space(4.0);
+    egui::Frame::new()
+        .fill(eis::BLOCK)
+        .stroke(Stroke::new(1.0, eis::RAND))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} {}", p.symbol(), p.name()))
+                        .strong()
+                        .color(eis::EIS),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("🗙")
+                        .on_hover_text(format!("{} entfernen", p.name()))
+                        .clicked()
+                    {
+                        weg = true;
+                    }
+                });
+            });
+            inhalt(ui);
+        });
+    weg
 }
 
 /// Vergleich, bei dem Zahlen als Zahlen zählen: „Baumstumpf 2“ vor „Baumstumpf 10“.

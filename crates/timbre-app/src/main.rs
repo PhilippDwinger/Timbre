@@ -1,9 +1,12 @@
 //! Timbre Studio – startet Fenster (nativ) bzw. Canvas (Browser), treibt den Game Loop an
 //! und zeichnet Szene und Editor-Oberfläche.
 
+mod eis;
 mod luau_farben;
+mod marke;
 mod oberflaeche;
 mod projekt;
+mod script_quelle;
 mod studio;
 mod vervollstaendigung;
 
@@ -11,7 +14,7 @@ use std::sync::Arc;
 
 use oberflaeche::Oberflaeche;
 use studio::Studio;
-use timbre_core::{FesterTakt, Input, Renderer};
+use timbre_core::{FesterTakt, Input, Renderer, Renderer3d};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -30,6 +33,8 @@ enum TimbreEvent {
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// 3D-Zeichner, erst beim ersten Umschalten auf 3D gebaut
+    renderer3d: Option<Renderer3d>,
     oberflaeche: Option<Oberflaeche>,
     studio: Option<Studio>,
     input: Input,
@@ -44,6 +49,7 @@ impl App {
         Self {
             window: None,
             renderer: None,
+            renderer3d: None,
             oberflaeche: None,
             studio: None,
             input: Input::default(),
@@ -73,6 +79,7 @@ impl App {
         let App {
             window,
             renderer,
+            renderer3d,
             oberflaeche,
             studio,
             input,
@@ -109,8 +116,14 @@ impl App {
         if let Some(mut frame) = renderer.frame_beginnen() {
             let mut statistik = Default::default();
             if let Some(bereich) = studio.bereich() {
-                let (kamera, sprites) = studio.sprites_bauen(takt.alpha());
-                statistik = renderer.sprites_zeichnen(&mut frame, &kamera, sprites, bereich);
+                if studio.ist_3d() {
+                    let r3d = renderer3d.get_or_insert_with(|| Renderer3d::new(renderer));
+                    let (kamera, modelle) = studio.modelle_bauen();
+                    r3d.zeichnen(renderer, &mut frame, &kamera, modelle, bereich);
+                } else {
+                    let (kamera, sprites) = studio.sprites_bauen(takt.alpha());
+                    statistik = renderer.sprites_zeichnen(&mut frame, &kamera, sprites, bereich);
+                }
             }
             studio.statistik_setzen(statistik);
             let size = window.inner_size();
@@ -129,7 +142,9 @@ impl ApplicationHandler<TimbreEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Timbre Studio");
+        let attrs = Window::default_attributes()
+            .with_title("Timbre Studio")
+            .with_window_icon(fenster_symbol());
 
         // Nativ: feste Startgröße. Browser: Canvas an die Seite hängen, Größe kommt aus dem CSS.
         #[cfg(not(target_arch = "wasm32"))]
@@ -233,4 +248,10 @@ fn logging_starten() {
     // Panics und Logs landen in der Browser-Konsole (F12).
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).expect("Logging konnte nicht gestartet werden");
+}
+
+/// Das Timbre-Logo als Fenster-Symbol (Taskleiste, Titelzeile).
+fn fenster_symbol() -> Option<winit::window::Icon> {
+    let (b, h, rgba) = timbre_core::assets::png_lesen(marke::LOGO_64).ok()?;
+    winit::window::Icon::from_rgba(rgba, b, h).ok()
 }

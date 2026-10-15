@@ -48,6 +48,9 @@ Objekt-IDs sind `i64` (intern: `hecs::Entity::to_bits`). Unbekannte IDs werden i
 | `set_velocity` | `(i64, f32 vx, f32 vy, f32 drehen)` |
 | `set_sprite` | `(i64, i32 p, i32 n, f32 b, f32 h, i32 ebene) → i32` – 0 = Textur unbekannt |
 | `set_color` | `(i64, f32 r, f32 g, f32 b, f32 a)` |
+| `set3d` | `(i64, i32 was, f32 x, f32 y, f32 z)` – was 0 = Position (Welt), 1 = Drehung (Grad), 2 = Skala; legt `Raum` an, falls nötig |
+| `get3d` | `(i64, i32 was, i32 aus) → i32` – schreibt 3 × f32; 0 = kein 3D-Objekt |
+| `set_mesh` | `(i64, i32 p, i32 n, f32 r, f32 g, f32 b)` – Form als Text (`cube`, `sphere`, `plane`, `cylinder`, auch deutsch); unbekannt/leer = entfernen |
 | `key_down`, `key_pressed` | `(i32 p, i32 n) → i32` |
 | `mouse_position` | `(i32 aus)` – 2 × f32 |
 | `set_camera` | `(f32 x, f32 y, f32 zoom)` |

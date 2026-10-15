@@ -26,7 +26,13 @@ use serde::{Deserialize, Serialize};
 use timbre_tbr::{AssetId, Szene};
 
 use crate::assets::Assets;
-use crate::welt::{Bewegung, Bild, Eltern, Form, Kollision, Name, Objekt, Script, Transform, Welt};
+use crate::renderer3d::Form3d;
+use std::collections::BTreeMap;
+
+use crate::welt::{
+    Bewegung, Bild, Eltern, Ereignisse, Form, HitBoxGroesse, Instanz, Kollision, Live, Masse, Mesh3d, Name, Objekt,
+    Raum, Script, ScriptVerweise, Transform, Welt,
+};
 
 /// Version des JSON-Inhalts (unabhängig von der `.tbr`-Formatversion).
 const SZENEN_FORMAT: u32 = 0;
@@ -59,6 +65,53 @@ struct ObjektDatei {
     script: Option<ScriptDatei>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kollision: Option<KollisionDatei>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    masse: Option<MasseDatei>,
+    /// Property „Scripts“: Script-Dateien, die für dieses Objekt laufen
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scripts: Option<Vec<String>>,
+    /// Property „Transform 3D“
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    raum: Option<RaumDatei>,
+    /// Property „Mesh (3D)“
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mesh: Option<MeshDatei>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RaumDatei {
+    position: [f32; 3],
+    #[serde(default, skip_serializing_if = "ist_null3")]
+    drehung: [f32; 3],
+    #[serde(default = "eins3", skip_serializing_if = "ist_eins3")]
+    skala: [f32; 3],
+}
+
+#[derive(Serialize, Deserialize)]
+struct MeshDatei {
+    /// "wuerfel", "kugel", "ebene", "zylinder"
+    form: String,
+    farbe: [f32; 4],
+}
+
+fn ist_null3(v: &[f32; 3]) -> bool {
+    *v == [0.0; 3]
+}
+fn eins3() -> [f32; 3] {
+    [1.0; 3]
+}
+fn ist_eins3(v: &[f32; 3]) -> bool {
+    *v == [1.0; 3]
+}
+fn r3(v: glam::Vec3) -> [f32; 3] {
+    [r(v.x), r(v.y), r(v.z)]
+}
+
+#[derive(Serialize, Deserialize)]
+struct MasseDatei {
+    wert: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    masselos: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,6 +122,9 @@ struct KollisionDatei {
     fest: bool,
     #[serde(default = "wahr", skip_serializing_if = "ist_wahr")]
     verankert: bool,
+    /// Eigene Größe (sonst Bildgröße)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    groesse: Option<[f32; 2]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,6 +152,12 @@ struct ScriptDatei {
     datei: String,
     #[serde(default = "wahr", skip_serializing_if = "ist_wahr")]
     aktiv: bool,
+    /// Eigene Namen der Ereignis-Funktionen (on_start → …)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    ereignisse: BTreeMap<String, String>,
+    /// Live-Script: Argumente der live-Funktionen
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live: Option<BTreeMap<String, Vec<String>>>,
 }
 
 fn eins() -> [f32; 2] {
@@ -140,7 +202,12 @@ fn r2(v: Vec2) -> [f32; 2] {
 /// Alle Objekte der Welt in eine Szene schreiben. Eltern stehen immer vor ihren Kindern.
 pub fn speichern(welt: &Welt, assets: &Assets, id: AssetId, name: &str) -> Result<Szene, String> {
     // Reihenfolge: Wurzeln zuerst, dann jeweils deren Kinder (Tiefensuche).
-    let mut alle: Vec<Objekt> = welt.iter().map(|e| e.entity()).collect();
+    // Laufende Script-Kopien (Instanz) gehören nicht in die Datei
+    let mut alle: Vec<Objekt> = welt
+        .iter()
+        .map(|e| e.entity())
+        .filter(|o| welt.get::<&Instanz>(*o).is_err())
+        .collect();
     alle.sort_by_key(|o| o.id());
     let eltern_von = |o: Objekt| welt.get::<&Eltern>(o).ok().map(|e| e.0).filter(|e| welt.contains(*e));
     let mut reihenfolge = Vec::with_capacity(alle.len());
@@ -197,6 +264,22 @@ pub fn speichern(welt: &Welt, assets: &Assets, id: AssetId, name: &str) -> Resul
             script: welt.get::<&Script>(o).ok().map(|s| ScriptDatei {
                 datei: s.datei.clone(),
                 aktiv: s.aktiv,
+                ereignisse: welt.get::<&Ereignisse>(o).map(|e| e.0.clone()).unwrap_or_default(),
+                live: welt.get::<&Live>(o).ok().map(|l| l.0.clone()),
+            }),
+            masse: welt.get::<&Masse>(o).ok().map(|m| MasseDatei {
+                wert: r(m.wert),
+                masselos: m.masselos,
+            }),
+            scripts: welt.get::<&ScriptVerweise>(o).ok().map(|v| v.0.clone()),
+            raum: welt.get::<&Raum>(o).ok().map(|t| RaumDatei {
+                position: r3(t.position),
+                drehung: r3(t.drehung),
+                skala: r3(t.skala),
+            }),
+            mesh: welt.get::<&Mesh3d>(o).ok().map(|m| MeshDatei {
+                form: m.form.schluessel().into(),
+                farbe: m.farbe.map(r),
             }),
             kollision: welt.get::<&Kollision>(o).ok().map(|k| KollisionDatei {
                 form: match k.form {
@@ -205,6 +288,7 @@ pub fn speichern(welt: &Welt, assets: &Assets, id: AssetId, name: &str) -> Resul
                 },
                 fest: k.fest,
                 verankert: k.verankert,
+                groesse: welt.get::<&HitBoxGroesse>(o).ok().map(|g| r2(g.0)),
             }),
         });
     }
@@ -282,6 +366,37 @@ pub fn laden(welt: &mut Welt, assets: &Assets, szene: &Szene) -> Result<usize, S
                 datei: s.datei.clone(),
                 aktiv: s.aktiv,
             });
+            if !s.ereignisse.is_empty() {
+                b.add(Ereignisse(s.ereignisse.clone()));
+            }
+            if let Some(l) = &s.live {
+                b.add(Live(l.clone()));
+            }
+        }
+        if let Some(m) = &o.masse {
+            b.add(Masse {
+                wert: m.wert,
+                masselos: m.masselos,
+            });
+        }
+        if let Some(v) = &o.scripts {
+            b.add(ScriptVerweise(v.clone()));
+        }
+        if let Some(t) = &o.raum {
+            b.add(Raum {
+                position: t.position.into(),
+                drehung: t.drehung.into(),
+                skala: t.skala.into(),
+            });
+        }
+        if let Some(m) = &o.mesh {
+            let Some(form) = Form3d::aus_schluessel(&m.form) else {
+                return Err(format!(
+                    "Unbekannte 3D-Form „{}“ (wuerfel, kugel, ebene, zylinder)",
+                    m.form
+                ));
+            };
+            b.add(Mesh3d { form, farbe: m.farbe });
         }
         if let Some(k) = &o.kollision {
             let form = match k.form.as_str() {
@@ -298,6 +413,9 @@ pub fn laden(welt: &mut Welt, assets: &Assets, szene: &Szene) -> Result<usize, S
                 fest: k.fest,
                 verankert: k.verankert,
             });
+            if let Some(g) = k.groesse {
+                b.add(HitBoxGroesse(g.into()));
+            }
         }
         baukaesten.push(b);
     }
@@ -341,6 +459,81 @@ mod tests {
         let (t, n) = neue_welt.query_mut::<(&Transform, &Name)>().into_iter().next().unwrap();
         assert_eq!(t.position, Vec2::new(1.5, -2.0));
         assert_eq!(n.0, "Punkt");
+    }
+
+    #[test]
+    fn dreid_hin_und_zurueck() {
+        let mut welt = Welt::new();
+        let raum = Raum {
+            position: glam::vec3(1.0, 2.0, -3.0),
+            drehung: glam::vec3(0.0, 45.0, 0.0),
+            skala: glam::Vec3::splat(2.0),
+        };
+        let mesh = Mesh3d {
+            form: Form3d::Kugel,
+            farbe: [0.5, 0.25, 1.0, 1.0],
+        };
+        welt.spawn((Name("Ball".into()), raum, mesh));
+        let assets = Assets::default();
+        let szene = speichern(&welt, &assets, AssetId::default(), "Test").unwrap();
+        assert!(szene.text.contains("\"kugel\""), "{}", szene.text);
+        let mut neu = Welt::new();
+        laden(&mut neu, &assets, &szene).unwrap();
+        let mut q = neu.query::<(&Raum, &Mesh3d)>();
+        let (r, m) = q.iter().next().unwrap();
+        assert_eq!((*r, *m), (raum, mesh));
+    }
+
+    #[test]
+    fn properties_hin_und_zurueck() {
+        let mut welt = Welt::new();
+        let leer = welt.spawn((
+            Name("Kiste".into()),
+            Transform::default(),
+            Kollision::default(),
+            HitBoxGroesse(glam::vec2(30.0, 20.0)),
+            Masse {
+                wert: 2.5,
+                masselos: true,
+            },
+            ScriptVerweise(vec!["Drehen.lua".into()]),
+        ));
+        let mut ereignisse = BTreeMap::new();
+        ereignisse.insert("on_start".to_string(), "los".to_string());
+        let mut live = BTreeMap::new();
+        live.insert("baue".to_string(), vec!["3".to_string(), "rot".to_string()]);
+        welt.spawn((
+            Name("Drehen".into()),
+            Script {
+                datei: "Drehen.lua".into(),
+                aktiv: true,
+            },
+            Ereignisse(ereignisse.clone()),
+            Live(live.clone()),
+        ));
+        welt.spawn((Name("Kopie".into()), Instanz)); // läuft nur bei ▶ – nicht speichern
+        let assets = Assets::default();
+        let szene = speichern(&welt, &assets, AssetId::default(), "Test").unwrap();
+        assert!(!szene.text.contains("Kopie"));
+        let mut neu = Welt::new();
+        assert_eq!(laden(&mut neu, &assets, &szene).unwrap(), 2);
+        let mut q = neu.query::<(&HitBoxGroesse, &Masse, &ScriptVerweise)>();
+        let (h, m, v) = q.iter().next().unwrap();
+        assert_eq!(h.0, glam::vec2(30.0, 20.0));
+        assert_eq!(
+            *m,
+            Masse {
+                wert: 2.5,
+                masselos: true
+            }
+        );
+        assert_eq!(v.0, vec!["Drehen.lua".to_string()]);
+        drop(q);
+        let mut q = neu.query::<(&Ereignisse, &Live)>();
+        let (e, l) = q.iter().next().unwrap();
+        assert_eq!(e.0, ereignisse);
+        assert_eq!(l.0, live);
+        let _ = leer;
     }
 
     #[test]

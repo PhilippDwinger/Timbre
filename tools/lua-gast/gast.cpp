@@ -60,6 +60,9 @@ IMPORT("ui_text") void h_ui_text(const char* k, int32_t kn, const char* t, int32
 IMPORT("ui_clear") void h_ui_clear(const char* k, int32_t kn);
 IMPORT("play_sound") int32_t h_play_sound(const char* p, int32_t n, float lautstaerke, int32_t schleife);
 IMPORT("stop_sounds") void h_stop_sounds(const char* p, int32_t n);
+IMPORT("set3d") void h_set3d(int64_t id, int32_t was, float x, float y, float z);
+IMPORT("get3d") int32_t h_get3d(int64_t id, int32_t was, float* aus);
+IMPORT("set_mesh") void h_set_mesh(int64_t id, const char* p, int32_t n, float r, float g, float b);
 // broadcast an Scripts anderer Sprachen weiterreichen. art: 0 nil, 1 bool, 2 Zahl, 3 Text, 4 Ganzzahl
 IMPORT("nachricht") void h_nachricht(const char* p, int32_t n, int32_t art, double zahl, const char* t, int32_t tn);
 }
@@ -240,6 +243,34 @@ static int l_stop_sounds(lua_State* L) {
     h_stop_sounds(s, n);
     return 0;
 }
+// --- 3D -------------------------------------------------------------------
+// timbre.set_position3d(id, x, y, z) (Welt) / set_rotation3d (Grad) / set_scale3d (eine Zahl = überall gleich)
+static int setze3d(lua_State* L, int32_t was) {
+    float x = (float)luaL_checknumber(L, 2);
+    float y = (float)luaL_optnumber(L, 3, was == 2 ? x : 0);
+    float z = (float)luaL_optnumber(L, 4, was == 2 ? x : 0);
+    h_set3d(id_arg(L, 1), was, x, y, z);
+    return 0;
+}
+static int lies3d(lua_State* L, int32_t was) {
+    float v[3];
+    if (!h_get3d(id_arg(L, 1), was, v)) return 0;
+    lua_pushnumber(L, v[0]); lua_pushnumber(L, v[1]); lua_pushnumber(L, v[2]); return 3;
+}
+static int l_set_position3d(lua_State* L) { return setze3d(L, 0); }
+static int l_set_rotation3d(lua_State* L) { return setze3d(L, 1); }
+static int l_set_scale3d(lua_State* L) { return setze3d(L, 2); }
+static int l_get_position3d(lua_State* L) { return lies3d(L, 0); }
+static int l_get_rotation3d(lua_State* L) { return lies3d(L, 1); }
+static int l_get_scale3d(lua_State* L) { return lies3d(L, 2); }
+// timbre.set_mesh(id, "cube"|"sphere"|"plane"|"cylinder"|nil [, r, g, b])
+static int l_set_mesh(lua_State* L) {
+    int32_t n = 0; const char* s = "";
+    if (!lua_isnoneornil(L, 2)) s = str_arg(L, 2, &n);
+    h_set_mesh(id_arg(L, 1), s, n, (float)luaL_optnumber(L, 3, 0.55), (float)luaL_optnumber(L, 4, 0.78),
+               (float)luaL_optnumber(L, 5, 0.95));
+    return 0;
+}
 static int l_broadcast(lua_State* L); // weiter unten
 
 static const luaL_Reg timbre_funktionen[] = {
@@ -251,6 +282,9 @@ static const luaL_Reg timbre_funktionen[] = {
     {"set_camera", l_set_camera}, {"set_parent", l_set_parent}, {"get_parent", l_get_parent},
     {"get_name", l_get_name}, {"set_collision", l_set_collision}, {"get_touching", l_get_touching},
     {"mouse_down", l_mouse_down}, {"mouse_pressed", l_mouse_pressed}, {"ui_text", l_ui_text}, {"ui_clear", l_ui_clear},
+    {"set_position3d", l_set_position3d}, {"get_position3d", l_get_position3d},
+    {"set_rotation3d", l_set_rotation3d}, {"get_rotation3d", l_get_rotation3d},
+    {"set_scale3d", l_set_scale3d}, {"get_scale3d", l_get_scale3d}, {"set_mesh", l_set_mesh},
     {"broadcast", l_broadcast}, {"play_sound", l_play_sound}, {"stop_sounds", l_stop_sounds}, {NULL, NULL},
 };
 
@@ -497,6 +531,8 @@ static int32_t laden(const char* name, int32_t name_n, const char* quelle, int32
     lua_setfield(L, -2, "name");
     if (script_id != 0) { id_push(L, script_id); lua_setfield(L, -2, "id"); }
     if (eltern_id != 0) { id_push(L, eltern_id); lua_setfield(L, -2, "parent"); }
+    // script.object: das Objekt, für das dieses Script läuft (Property „Scripts“ oder Eltern-Objekt)
+    if (eltern_id != 0) { id_push(L, eltern_id); lua_setfield(L, -2, "object"); }
     lua_setfield(L, umgebung_index, "script");
     ref_holen(L, geteilt_ref);
     lua_setfield(L, umgebung_index, "shared");

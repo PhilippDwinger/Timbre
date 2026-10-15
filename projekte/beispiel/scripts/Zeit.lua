@@ -15,7 +15,9 @@ local function uhrzeit(s)
 	return string.format("%d:%02d", ganz // 60, ganz % 60)
 end
 
-function on_update(dt)
+-- Diese Funktion heißt nicht on_update: In den Eigenschaften dieses Scripts steht unter
+-- "Ereignisse" bei Update der Name "jede_frame" – so kann jede Funktion jedes Ereignis bekommen.
+function jede_frame(dt)
 	sekunden = sekunden + dt
 	local text = "Zeit: " .. uhrzeit(sekunden)
 	if letztes then

@@ -5,6 +5,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
 
 ## Ziele
 - **Timbre Studio** als Herzstück (Paddys Vorgabe): Bearbeiten-Modus wie Roblox Studio – Szene bearbeiten, Scripts schreiben, **▶ Ausführen** startet alles, **■ Stopp** setzt die Szene zurück.
+- **2D und 3D** (Paddy): Szene wahlweise in 2D (Sprites) oder 3D (Körper) bearbeiten und spielen.
 - Engine, die nativ (Windows) UND im Browser (WebGPU, eingebettet in Grove) läuft – eine Codebasis.
 - Scripting in vielen Sprachen. **Pflicht: Lua, Luau, Java, Python.** Danach so viele wie möglich.
 - Eigene Editoren, gebaut AUF der Engine (nicht daneben):
@@ -22,7 +23,7 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - **Mehrere Sprachen gleichzeitig:** pro Sprache ein `ScriptMotor` (Hintergrund-Übersetzung) und beim ▶ eine `ScriptLaufzeit` (`Studio::laufzeiten`). Physik einmal pro Schritt, `beruehrungen_melden` an jede Laufzeit. `broadcast` geht über den Host auch an andere Sprachen (Import `nachricht` → `Kontext::ausgehend` → `Studio::nachrichten_verteilen` → Export `timbre_nachricht`; nur einfache Daten, max. 8 Runden pro Schritt). `shared` bleibt pro Sprache.
   - Script-API ist englisch (`timbre.spawn`, `timbre.set_position` …), Engine-Code deutsch. Doku für Nutzer: `docs/scripting.md`.
   - **Python (geändert, begründet):** statt componentize-py **CPython 3.12 selbst als Core-Modul-Gast** mit derselben ABI (`tools/python-gast`: `gast.c` + `laufzeit.py`). Grund: componentize-py braucht das Component Model, das wir in M5 verlassen haben; so ist es echtes Python mit Standardbibliothek. Paddy: „mach wie es am besten passt“. Standardbibliothek als Zip im schreibgeschützten Speicher-Dateisystem des Hosts (`wasi.rs`). Warten = `async def` + `await task.wait(s)`. Gast wird nur bei Bedarf übersetzt und im Temp-Ordner zwischengespeichert.
-  - Java: TeaVM → WASM; ggf. dünner Adapter nötig (Component-Model-Tooling für Java noch unreif).
+  - **Java (Plan, noch nicht gebaut):** Anders als Lua/Python lässt sich Java nicht sinnvoll als Interpreter-Gast einbetten (eine JVM samt Klassenbibliothek als WASM wäre riesig). Plan: **javac + TeaVM (WASI-/Core-Wasm-Ausgabe) beim Speichern** – jedes `.java`-Script wird zu einem eigenen Core-Modul mit derselben ABI (Host-Importe per TeaVM `@Import`, Exporte `timbre_start` …). Folge: Paddy braucht ein **JDK (21)** auf dem Rechner; TeaVM-Jars kommen von Maven Central (Studio lädt/cached sie oder `tools/java-gast` per Gradle). In Claudes Umgebung nicht machbar: Maven Central/GitHub sind dort gesperrt. Vor dem Bauen mit Paddy klären (JDK ok?).
   - Bonus-Sprachen: Rust, C, C++, C#, Go (TinyGo), Zig, AssemblyScript, JavaScript, Kotlin.
 - **Zweite Steuer-Ebene:** Timbre wird ein **Bridge-Client** in einem Realm und bietet Funktionen an (Szene laden, Objekt spawnen, Mesh exportieren …). Asynchron, für Fernsteuerung aus jeder Sprache mit Bridge-Extension.
 - **ECS:** `hecs` (klein, schnell, läuft im Browser). Objekte ↔ `u64` über `welt::objekt_nummer` / `objekt_aus_nummer` – passt zu `spawn → u64` in `wit/timbre.wit`.
@@ -30,6 +31,11 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - **Scripts sind Objekte** (Paddys Vorgabe, Roblox-Prinzip): Komponente `Script { datei, aktiv }` + optional `Eltern(Objekt)`. Quelltext bleibt Datei in `scripts/` (für Git/VS Code); Name ändern = Datei umbenennen (beim Speichern). Dateien ohne Script-Objekt wandern beim Speichern nach `scripts/.papierkorb/`. Ältere Projekte: lose `.luau`-Dateien werden beim Laden zu Script-Objekten.
 - **Baum:** `Eltern`-Komponente, Löschen entfernt Nachkommen (`welt::entfernen`).
 - **Transform ist relativ zum nächsten Vorfahren mit Transform** (Ordner/Scripts ohne Transform zählen nicht). `welt::welt_transform` / `welt_transform_setzen` rechnen um; `eltern_setzen` hängt um, ohne dass das Objekt springt. Script-API (`get/set_position`, `get/set_rotation`) arbeitet in **Weltkoordinaten** (wie Roblox `Position`), das Eigenschaften-Panel zeigt lokale Werte.
+- **Properties (wie Unity-Komponenten, Paddys Vorgabe):** Neue Objekte sind leer (Name, Transform, Eltern). Alles andere hängt man als Property an: Bild, HitBox (`Kollision` + optional `HitBoxGroesse`), Masse (`Masse {wert, masselos}`), Bewegung, Scripts (`ScriptVerweise`), Transform 3D (`Raum`), Mesh (3D) (`Mesh3d`). Im Studio: `enum Property` + `property_block()` + `hat_/property_hinzufuegen/_entfernen` – neue Properties dort UND in `szene.rs` (Datei), `duplizieren` und ggf. `physik.rs` nachziehen.
+- **Ereignis-Namen pro Script** (`Ereignisse`, nur an Scripts): Umleitung per Zeile am Ende des Quelltexts (`on_start = los`, `script_quelle::fuer_laufzeit`) – Gäste wissen nichts davon, Zeilennummern bleiben gleich.
+- **Live-Scripts** (`Live`): `live` direkt vor `function`/`def` wird vor dem Laden entfernt (`script_quelle::ohne_live`); „▶ Run“ lädt das Script mit einem erzeugten `on_start` (`fuer_live_aufruf`) in eine **temporäre Laufzeit im Bearbeiten-Modus** auf der echten Welt; Änderungen bleiben, `markieren()` macht sie rückgängig-bar.
+- **Verknüpfte Scripts** (`ScriptVerweise` am Objekt): beim ▶ pro Objekt eine `Instanz`-Entity (Script + Eltern = Objekt, nicht gespeichert, im Explorer versteckt); `script.object` = `eltern_id`. Verknüpfte Scripts laufen nicht zusätzlich allein.
+- **3D** (`renderer3d.rs`, `shaders/mesh.wgsl`): eigener Pass nach dem Frame-Beginn mit Tiefenpuffer (Depth32), Instancing pro Form, Licht = Himmel + Sonne + Glanz + Nebel (Eis-Look), Matrizen von Hand (glam 0.34). Körper sind eingebaute Formen (`Form3d`), echte Meshes aus `.tbr` kommen mit Timbre Carve. `Raum` ist relativ zum nächsten Vorfahren mit `Raum` (`welt_raum`). Script-API: `set3d/get3d` (was 0/1/2 = Position Welt/Drehung Grad/Skala) + `set_mesh`; WIT v0.6. Studio: `studio/ansicht3d.rs` (Orbit-Kamera, Strahl-Picking im Objektraum, Ziehen auf waagerechter Ebene, Boden-Gitter als unbeleuchtete, halbdurchsichtige flache Quader – zuletzt gezeichnet). 2D-Physik gilt nur für 2D.
 - **Kollisionen** (`physik.rs`): Kreis / ungedrehtes Rechteck, Größe aus Bild × Skala; `fest` (blockiert) vs. Auslöser; `verankert` (wie Anchored). Feste, nicht verankerte werden herausgeschoben, Geschwindigkeit in die Wand wird gekappt. O(n²) über Objekte mit Kollision – reicht für einige hundert. `on_touch` nur bei **neuer** Berührung, an Scripts, deren Eltern beteiligt sind.
 - **Luau-Gast-Laufzeit:** `on_start`, `on_touch`, `on_message` laufen als Coroutinen (dürfen `task.wait`), `on_update` per pcall (kein Warten). Achtung im Gast-C++: immer auf dem Stack des übergebenen `lua_State` arbeiten (Coroutinen!), nicht auf dem globalen `L`.
 - **Rückgängig** = Schnappschüsse des Szenen-JSON (max. 100), gemerkt nach abgeschlossener Änderung (`markieren()` an jeder Änderungsstelle im Studio aufrufen!).
@@ -48,6 +54,8 @@ Repo: https://github.com/PhilippDwinger/Timbre
 - `tools/lua-gast` – Lua 5.4 → WebAssembly, gleiche Logik wie der Luau-Gast (Änderungen an der Script-API immer in **beiden** `gast.cpp` nachziehen und beide neu bauen).
 - `crates/tbr` – Kommandozeilen-Werkzeug: `tbr info`, `tbr textur` (PNG), `tbr mesh` (glTF/GLB).
 - `assets/quellen` – Ausgangsdateien (PNG, glTF); `assets/texturen`, später `assets/meshes` – fertige `.tbr`.
+
+- **Design „Eis/Arktis“** (Paddy): Farben in `timbre-app/src/eis.rs`, Logo/Startanimation/Schnee in `marke.rs`, Bilder erzeugt `tools/marke_erzeugen.py` (Pillow) nach `assets/marke/`. Achtung: egui-Standardschriften haben viele Symbole nicht (z. B. ✕ ＋ ⬢) – vorher prüfen (fontTools auf `epaint_default_fonts`), sonst erscheint □.
 
 ## Harte Regeln
 - **Bridge niemals verändern.** Timbre spricht nur Bridges Protokoll als Client. Bridge-Anbindung erst, wenn Bridge 1.1 steht.
@@ -147,4 +155,12 @@ Repo: https://github.com/PhilippDwinger/Timbre
   - Beispielprojekt: `scripts/Funkeln.py` als Script-Objekt in `szene.tbr`.
   - Pushen von Claudes Umgebung aus geht nicht (Repo ist für die Sitzung nicht freigegeben) – Paddy committet/pusht selbst.
   - Nächste Schritte: Paddy validiert Meilenstein 5 + Python. Danach **Java** (Plan: TeaVM → WASM; prüfen, ob TeaVMs WASI-/GC-Ausgabe zur Core-Modul-ABI passt, sonst kleiner Java-Interpreter als Gast).
-
+- **Paket „Properties, Live, 3D, Eis-Design“** (Paddy beim Essen: „arbeite durch“; in Claudes Testumgebung geprüft, wartet auf Validierung):
+  - **Leere Objekte + Properties** wie in Unity (siehe Architektur). Masse: Feld ausgegraut, wenn **Masselos**; Physik schiebt anteilig nach inverser Masse (Test `schweres_objekt_schiebt_leichtes_weg`). HitBox mit eigener Größe.
+  - **Ereignis-Namen pro Script** mit Vorschlägen aus den Funktionen des Scripts (Beispiel `Zeit.lua` → `jede_frame`).
+  - **Live-Scripts** mit Feldern pro Argument und **▶ Run** ohne Spielstart (Beispiel `Wald.luau`: `pflanze_ring`, `faellen`; geprüft: 8 Bäume erzeugt).
+  - **Property „Scripts“ / `script.object`** in Luau, Lua, Python (Beispiel `Drehen.lua` an Baumstumpf 1, 3, 5).
+  - **Eis-Design:** Logo (Schneekristall mit Jahresringen), Startanimation (Startbild, Glanz, Schnee, Klick überspringt), Fenster-Symbol, drehendes Logo während ▶, pulsierender Stopp-Knopf, „atmender“ Kristall bei leerer Auswahl, Eis-Texturen `eisscholle`, `schneeflocke`. Bilder in `assets/marke/` (Logos 32–1024, Wortmarken, Banner, Startbild, Hintergrund, Symbole).
+  - **3D, erster Schritt:** Leiste 2D/3D, Explorer „+ Körper“, Properties Transform 3D + Mesh (3D), Orbit-Kamera, Anklicken/Ziehen, Script-API `set_mesh`, `set/get_position3d`, `set/get_rotation3d`, `set/get_scale3d` in allen drei Sprachen (Test `dreid_in_allen_sprachen`), Szenen-JSON `raum {position, drehung, skala}` + `mesh {form, farbe}` (Test `dreid_hin_und_zurueck`). Beispiel: `Eisfeld.luau` (Live: `eisberge`, `schmelzen`; ▶ dreht den Kristall) + Boden, Kristall, Schneeball, Eissäule.
+  - Offen für 3D: Schatten, Kantenglättung (MSAA), echte Meshes aus `.tbr`, Kollisionen/Physik in 3D, Dreh-/Skalier-Griffe in 3D, Spiel-Kamera per Script (`set_camera3d`).
+  - **Java:** nicht gebaut – siehe Plan unter Architektur (braucht JDK + TeaVM von Maven Central, hier gesperrt).
